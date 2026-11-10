@@ -1,0 +1,11 @@
+{
+	"baseBranch": "main",
+	"sourceRoot": "src",
+	"features": "src/features",
+	"sharedChrome": "src/components",
+	"app": ["src/main", "src/App"],
+	"exempt": ["src/components/ui/"],
+	"generated": [],
+	"aliases": { "@/": "src/" },
+	"longFile": 400
+}

@@ -1,11 +1,29 @@
 {
   "version": 1,
   "skills": {
-    "domain-modeling": {
-      "source": "mattpocock/skills",
+    "codebase-design": {
+      "source": "trafargarlaw/skills",
       "sourceType": "github",
-      "skillPath": "skills/engineering/domain-modeling/SKILL.md",
-      "computedHash": "f377a1341e1b368833cfe5889ace3e61d7df48d7a9e5da9253dba75d062bbfbc"
+      "skillPath": "skills/codebase-design/SKILL.md",
+      "computedHash": "3b194675edf32914b3e6ffcd2f68d7a370babd4d93190c69aa58e7318e5c8793"
+    },
+    "domain-modeling": {
+      "source": "trafargarlaw/skills",
+      "sourceType": "github",
+      "skillPath": "skills/domain-modeling/SKILL.md",
+      "computedHash": "a8aa7dd83141c85bbe9ec4b9fc9bb2346ff29f13f30dff4f11dce8b503e5461e"
+    },
+    "setup-project": {
+      "source": "trafargarlaw/skills",
+      "sourceType": "github",
+      "skillPath": "skills/setup-project/SKILL.md",
+      "computedHash": "6b141bfb962a84f556f948d56f9515e2f8ae31bc446210f553ffa4ff1067fccf"
+    },
+    "writing-tests": {
+      "source": "trafargarlaw/skills",
+      "sourceType": "github",
+      "skillPath": "skills/writing-tests/SKILL.md",
+      "computedHash": "23c99fcd7e92788b51e8095f0983074cf713462f4105b2661e29b0b805e2d9f8"
     }
   }
 }
