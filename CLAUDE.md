@@ -21,7 +21,11 @@ Use pnpm, and add a package to the workspace package that imports it. Root `devD
 
 ### Issue tracker
 
-Issues and specs live as local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+Issues are tracked as GitHub Issues on `trafargarlaw/dodocode` via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
