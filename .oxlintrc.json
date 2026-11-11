@@ -35,6 +35,22 @@
         "node": true,
         "browser": false
       }
+    },
+    {
+      // The shadcn CLI generates this code. These rules flag shadcn's own patterns (ARIA roles on
+      // divs, effects that sync state from matchMedia), so they stay off to keep the code upstream.
+      "files": ["packages/ui/src/**"],
+      "rules": {
+        "jsx-a11y/prefer-tag-over-role": "off",
+        "jsx-a11y/click-events-have-key-events": "off",
+        "jsx-a11y/no-noninteractive-element-interactions": "off",
+        "jsx-a11y/no-noninteractive-tabindex": "off",
+        "jsx-a11y/label-has-associated-control": "off",
+        "react/set-state-in-effect": "off",
+        "react/no-unstable-nested-components": "off",
+        "no-shadow": "off",
+        "no-underscore-dangle": "off"
+      }
     }
   ]
 }

@@ -2,7 +2,7 @@
 
 A desktop app for working with coding agents. Runs on macOS, Windows and Linux.
 
-Built with Electron, React, Vite and Tailwind, in a Turborepo with pnpm workspaces.
+Built with Electron, React, Vite, Tailwind and shadcn/ui, in a Turborepo with pnpm workspaces.
 
 ## Develop
 
@@ -36,4 +36,5 @@ pnpm format     # oxfmt
   - `src/main`: main process (windows, system access)
   - `src/preload`: the bridge the UI reaches as `window.dodocode`
   - `src/renderer`: the React UI
+- `packages/ui`: shared shadcn components, hooks and theme (`@dodocode/ui`)
 - `packages/typescript-config`: shared TypeScript settings

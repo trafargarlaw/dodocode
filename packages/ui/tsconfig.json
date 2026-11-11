@@ -1,0 +1,11 @@
+{
+  "extends": "@dodocode/typescript-config/base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "paths": {
+      "@dodocode/ui/*": ["./src/*"]
+    }
+  },
+  "include": ["src"]
+}

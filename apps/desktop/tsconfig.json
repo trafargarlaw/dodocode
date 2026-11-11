@@ -1,4 +1,12 @@
 {
   "files": [],
-  "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.web.json" }]
+  "references": [{ "path": "./tsconfig.node.json" }, { "path": "./tsconfig.web.json" }],
+  // Type checking uses the referenced configs. These paths are for the shadcn CLI, which reads
+  // them from this file to find where the aliases in components.json point.
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./src/renderer/*"],
+      "@dodocode/ui/*": ["../../packages/ui/src/*"]
+    }
+  }
 }

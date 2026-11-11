@@ -8,7 +8,14 @@ A Turborepo with pnpm workspaces: apps in `apps/`, shared packages in `packages/
 
 ## Packages
 
-Use pnpm. Add a package to the workspace package that imports it, in `devDependencies` by default: `pnpm add -D <pkg> --filter @dodocode/desktop`. Vite bundles everything the desktop renderer and preload import. In `apps/desktop`, put a package in `dependencies` only when the Electron main process imports it at runtime; electron-vite leaves those imports unbundled, and electron-builder ships `dependencies` inside the packaged app. Root `devDependencies` hold only repo-wide tools.
+Use pnpm, and add a package to the workspace package that imports it. Root `devDependencies` hold only repo-wide tools.
+
+- **`apps/desktop`:** `devDependencies` by default (`pnpm add -D <pkg> --filter @dodocode/desktop`), workspace packages included, because Vite bundles everything the renderer and preload import. Use `dependencies` only for a package the Electron main process imports at runtime: electron-vite leaves those imports unbundled, and electron-builder ships `dependencies` inside the packaged app.
+- **`packages/*`:** what a package's source imports goes in its `dependencies`. The app still bundles it all, because it lists the workspace package in `devDependencies`.
+
+## UI components
+
+`packages/ui` (`@dodocode/ui`) holds the shadcn components, hooks and theme that apps share. Import them as `@dodocode/ui/components/<name>`. Run the shadcn CLI in `packages/ui` (`pnpm exec shadcn add <name>`). Run from `apps/desktop`, it still writes the component to `packages/ui`, but it puts the component's dependencies in the desktop's `dependencies`, which ships them unbundled.
 
 ## Agent skills
 
