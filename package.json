@@ -9,6 +9,7 @@
     "package": "turbo run package",
     "dist": "turbo run dist",
     "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",

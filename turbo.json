@@ -8,6 +8,9 @@
     "typecheck": {
       "dependsOn": ["transit"]
     },
+    "test": {
+      "dependsOn": ["transit"]
+    },
     "build": {
       "dependsOn": ["^build", "typecheck", "^typecheck"],
       "outputs": ["out/**"]
