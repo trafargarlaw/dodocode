@@ -16,7 +16,25 @@
   },
   "rules": {
     "react/react-in-jsx-scope": "off",
-    "import/no-unassigned-import": ["warn", { "allow": ["**/*.css", "@fontsource*/**"] }]
+    "import/no-unassigned-import": [
+      "warn",
+      {
+        "allow": ["**/*.css", "@fontsource*/**"]
+      }
+    ]
   },
-  "ignorePatterns": ["dist", "src-tauri", "node_modules"]
+  "ignorePatterns": [".agents", ".claude", ".turbo", "dist", "out", "release", "node_modules"],
+  "overrides": [
+    {
+      "files": [
+        "apps/desktop/src/main/**",
+        "apps/desktop/src/preload/**",
+        "apps/desktop/electron.vite.config.ts"
+      ],
+      "env": {
+        "node": true,
+        "browser": false
+      }
+    }
+  ]
 }

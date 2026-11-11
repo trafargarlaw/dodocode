@@ -1,0 +1,14 @@
+appId: com.ultrapc.dodocode
+directories:
+  output: release
+files:
+  - out/**/*
+  - package.json
+mac:
+  target: [dmg, zip]
+  category: public.app-category.developer-tools
+win:
+  target: [nsis]
+linux:
+  target: [AppImage]
+  category: Development

@@ -4,10 +4,12 @@
   "ignorePatterns": [
     ".agents",
     ".claude",
+    ".turbo",
     "dist",
-    "src-tauri",
     "node_modules",
-    "package-lock.json",
+    "out",
+    "release",
+    "pnpm-lock.yaml",
     "skills-lock.json"
   ]
 }
