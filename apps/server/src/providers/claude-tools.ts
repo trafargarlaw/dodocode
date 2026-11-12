@@ -4,15 +4,16 @@ import { isAbsolute, relative } from "node:path";
 
 import type { FileChange, TodoEntry, ToolKind } from "@dodocode/protocol";
 
-import { MOVE_TASK, moveTaskTitle } from "./app-tools";
+import { ADD_IDEA, addIdeaTitle, MOVE_TASK, moveTaskTitle } from "./app-tools";
 
 /** The in-process server that gives Claude dodocode's own tools, as `mcp__dodocode__<tool>`. */
 export const APP_SERVER = "dodocode";
 
 const MOVE_TASK_TOOL = `mcp__${APP_SERVER}__${MOVE_TASK}`;
+const ADD_IDEA_TOOL = `mcp__${APP_SERVER}__${ADD_IDEA}`;
 
 /** The app's tools are always allowed: each one does what the person asked for in words. */
-export const APP_TOOLS = [MOVE_TASK_TOOL];
+export const APP_TOOLS = [MOVE_TASK_TOOL, ADD_IDEA_TOOL];
 
 export function relativePath(path: string, cwd: string): string {
   if (!path || !isAbsolute(path)) return path;
@@ -88,6 +89,8 @@ export function describeTool(
       };
     case MOVE_TASK_TOOL:
       return { kind: "other", title: moveTaskTitle(input) };
+    case ADD_IDEA_TOOL:
+      return { kind: "other", title: addIdeaTitle(input) };
     default: {
       if (name.startsWith("mcp__")) {
         const [, server, ...tool] = name.split("__");

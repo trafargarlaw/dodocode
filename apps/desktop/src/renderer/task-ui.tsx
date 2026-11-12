@@ -11,7 +11,7 @@ import { cn } from "@dodocode/ui/lib/utils";
 import { moveTask, placeTask } from "./server/app-data";
 import { COLUMNS, GROUP_LABEL, type GroupId } from "./task-list";
 
-const FILLED: Record<Exclude<GroupId, "chats">, number> = {
+const FILLED: Record<Exclude<GroupId, "chats" | "backlog">, number> = {
   todo: 0,
   progress: 0.5,
   review: 0.75,
@@ -19,6 +19,7 @@ const FILLED: Record<Exclude<GroupId, "chats">, number> = {
 };
 
 const COLOR: Record<GroupId, string> = {
+  backlog: "text-muted-foreground",
   todo: "text-muted-foreground",
   progress: "text-amber-600 dark:text-amber-400",
   review: "text-violet-600 dark:text-violet-400",
@@ -26,8 +27,31 @@ const COLOR: Record<GroupId, string> = {
   chats: "text-muted-foreground",
 };
 
-/** A ring that fills as the task goes from To do to Done, or a bubble for a chat. */
+/**
+ * A ring that fills as the task goes from To do to Done, or a bubble for a chat. An idea in the
+ * backlog is a ring of dots, a step before To do's dashes.
+ */
 export function StatusGlyph({ status, className }: { status: GroupId; className?: string }) {
+  if (status === "backlog") {
+    return (
+      <svg
+        viewBox="0 0 14 14"
+        aria-hidden
+        className={cn("size-3.5 shrink-0", COLOR.backlog, className)}
+      >
+        <circle
+          cx="7"
+          cy="7"
+          r="5.75"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeDasharray="0.01 2.4"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
   if (status === "chats") {
     return (
       <HugeiconsIcon
@@ -118,17 +142,18 @@ export function Attention({
 
 /**
  * Menu items that put a thread in a column of the board, and a task back to a chat. One nobody
- * started can't go back: it has no chat yet.
+ * started can go back to the backlog, but not to a chat: it has no chat yet.
  */
 export function MoveItems({ thread }: { thread: Thread }) {
   const current = thread.task?.status;
+  const statuses = thread.task && unstarted(thread) ? (["backlog", ...COLUMNS] as const) : COLUMNS;
   return (
     <>
-      {COLUMNS.map((status) => (
+      {statuses.map((status) => (
         <DropdownMenuItem
           key={status}
           disabled={status === current}
-          onClick={() => void placeTask(thread, status, status === "done")}
+          onClick={() => void placeTask(thread, status, status === "done" || status === "backlog")}
         >
           <StatusGlyph status={status} />
           {status === "progress" && unstarted(thread) ? "Start" : GROUP_LABEL[status]}

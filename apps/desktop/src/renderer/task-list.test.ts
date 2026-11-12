@@ -28,6 +28,8 @@ function sub(id: string, parentId: string, status: ThreadStatus = "idle"): Threa
 
 const ALL: ListFilter = { needsYou: false };
 
+const ids = (cards: Thread[]) => cards.map((card) => card.id);
+
 /** The groups as `group: rows`, a nested row indented, and the count behind "Show more". */
 function groups(
   threads: Thread[],
@@ -156,27 +158,40 @@ describe("the sidebar", () => {
   });
 });
 
-test("the board holds the tasks of the filter, not chats or archived ones", () => {
+test("the board holds the tasks of the filter, not chats, and keeps archived ideas apart", () => {
   const list = [
     thread("chat"),
+    task("idea", "backlog", { startedAt: undefined }),
+    task("old", "backlog", { startedAt: undefined, archived: true, updatedAt: 1 }),
+    task("dropped", "backlog", { startedAt: undefined, archived: true, updatedAt: 2 }),
     task("a", "todo"),
     task("b", "review"),
     task("gone", "review", { archived: true }),
     task("other", "todo", { projectId: "q" }),
   ];
   const columns = boardColumns(list, { projectId: "p", needsYou: false });
-  expect(Object.values(columns).map((column) => column.map((card) => card.id))).toEqual([
-    ["a"],
-    [],
-    ["b"],
-    [],
-  ]);
+  expect({
+    backlog: ids(columns.backlog),
+    todo: ids(columns.todo),
+    progress: ids(columns.progress),
+    review: ids(columns.review),
+    done: ids(columns.done),
+    notDoing: ids(columns.notDoing),
+  }).toEqual({
+    backlog: ["idea"],
+    todo: ["a"],
+    progress: [],
+    review: ["b"],
+    done: [],
+    notDoing: ["dropped", "old"],
+  });
 });
 
 describe("dropping a card", () => {
   const fresh = task("fresh", "todo", { startedAt: undefined });
   const started = task("started", "todo");
   const review = task("review", "review");
+  const idea = task("idea", "backlog", { startedAt: undefined });
 
   test.each<[string, Thread, TaskStatus | Thread, ReturnType<typeof dropOf>]>([
     ["on its own column does nothing", review, "review", { kind: "none" }],
@@ -212,6 +227,21 @@ describe("dropping a card", () => {
       { kind: "move", status: "review" },
     ],
     ["on itself does nothing", fresh, fresh, { kind: "none" }],
+    ["an idea, on To do, plans it", idea, "todo", { kind: "move", status: "todo" }],
+    [
+      "nobody started, on the backlog, unplans it",
+      fresh,
+      "backlog",
+      { kind: "move", status: "backlog" },
+    ],
+    ["started, on the backlog, does nothing", started, "backlog", { kind: "none" }],
+    ["an idea, on a task, folds it in", idea, review, { kind: "merge", into: review }],
+    [
+      "planned, on an idea, moves it to the backlog",
+      fresh,
+      idea,
+      { kind: "move", status: "backlog" },
+    ],
   ])("%s", (_name, card, target, expected) => {
     expect(dropOf(card, target)).toEqual(expected);
   });

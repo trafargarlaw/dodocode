@@ -40,7 +40,7 @@ import {
 import { expandPath, listFolders } from "./folders";
 import { ClaudeProvider } from "./providers/claude";
 import { CodexProvider } from "./providers/codex";
-import type { Provider } from "./providers/types";
+import type { IdeaRequest, Provider } from "./providers/types";
 import { Store } from "./store";
 import { itemFrom, merged, moved, promoted, split, todoTask } from "./tasks";
 import { ThreadRuntime, type ThreadContext } from "./thread";
@@ -226,6 +226,23 @@ export class App implements ThreadContext {
     };
     this.store.saveSettings(this.settings);
     this.emit({ type: "settings", settings: this.settings });
+  }
+
+  addIdea(from: Thread, idea: IdeaRequest): Thread {
+    // A subagent's idea belongs to the task it works for.
+    const root = this.rootOf(from);
+    if (!root.projectId) {
+      throw new Error("This conversation has no project, so there is no board to add it to.");
+    }
+    const details = idea.details?.trim();
+    const text = details ? `${idea.title.trim()}\n\n${details}` : idea.title;
+    const thread = todoTask(
+      this.newThread(root.projectId, this.threadSettings(undefined)),
+      itemFrom({ text, images: [] }),
+      Date.now(),
+      "backlog",
+    );
+    return this.adoptThread({ ...thread, task: { ...thread.task!, suggestedBy: root.id } }).thread;
   }
 
   // Helpers
@@ -823,12 +840,13 @@ export class App implements ThreadContext {
       return { merged: true, thread: runtime.thread };
     },
 
-    "task.create": ({ projectId, message, settings, workspace }) => {
+    "task.create": ({ projectId, message, status, settings, workspace }) => {
       this.projectPath(projectId);
       const thread = todoTask(
         this.newThread(projectId, this.threadSettings(settings)),
         itemFrom(message),
         Date.now(),
+        status,
       );
       if (workspace) this.workspaceUsed(workspace);
       return this.adoptThread(workspace ? { ...thread, workspace } : thread).thread;
@@ -863,7 +881,12 @@ export class App implements ThreadContext {
       const runtime = this.runtime(threadId);
       const { thread, item } = split(runtime.thread, itemId, Date.now());
       runtime.replace(thread);
-      const todo = todoTask(this.newThread(thread.projectId, thread.settings), item, Date.now());
+      const todo = todoTask(
+        this.newThread(thread.projectId, thread.settings),
+        item,
+        Date.now(),
+        thread.task?.status === "backlog" ? "backlog" : "todo",
+      );
       // Split off a task nobody started, it keeps the choice made for where it works.
       const kept =
         thread.startedAt === undefined && thread.workspace ? { workspace: thread.workspace } : {};

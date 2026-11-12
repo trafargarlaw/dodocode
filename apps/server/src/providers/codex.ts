@@ -11,6 +11,11 @@ import type {
 
 import { errorText, log, wellFormed } from "../util";
 import {
+  ADD_IDEA,
+  ADD_IDEA_DESCRIPTION,
+  ADD_IDEA_SCHEMA,
+  addIdea,
+  addIdeaTitle,
   MOVE_TASK,
   MOVE_TASK_DESCRIPTION,
   MOVE_TASK_SCHEMA,
@@ -358,7 +363,11 @@ class ItemMapper {
           kind: "other" as const,
           name: String(item.tool ?? "tool"),
           title:
-            item.tool === MOVE_TASK ? moveTaskTitle(item.arguments) : String(item.tool ?? "Tool"),
+            item.tool === MOVE_TASK
+              ? moveTaskTitle(item.arguments)
+              : item.tool === ADD_IDEA
+                ? addIdeaTitle(item.arguments)
+                : String(item.tool ?? "Tool"),
           input: item.arguments,
         };
       case "webSearch":
@@ -551,6 +560,12 @@ class CodexSession implements ProviderSession, Route {
             name: MOVE_TASK,
             description: MOVE_TASK_DESCRIPTION,
             inputSchema: MOVE_TASK_SCHEMA,
+          },
+          {
+            type: "function",
+            name: ADD_IDEA,
+            description: ADD_IDEA_DESCRIPTION,
+            inputSchema: ADD_IDEA_SCHEMA,
           },
         ],
       })) as { thread: { id: string } };
@@ -861,7 +876,9 @@ class CodexSession implements ProviderSession, Route {
         const answer =
           params.tool === MOVE_TASK
             ? moveTask(this.host, params.arguments)
-            : { ok: false, text: `dodocode has no tool named ${String(params.tool)}.` };
+            : params.tool === ADD_IDEA
+              ? addIdea(this.host, params.arguments)
+              : { ok: false, text: `dodocode has no tool named ${String(params.tool)}.` };
         return { contentItems: [{ type: "inputText", text: answer.text }], success: answer.ok };
       }
       default:

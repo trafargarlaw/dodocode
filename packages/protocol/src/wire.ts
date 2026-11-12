@@ -140,11 +140,13 @@ export interface Methods {
    */
   "thread.merge": { params: { threadId: string }; result: MergeResult };
 
-  /** Adds a task to To do. It starts when its first message is sent. */
+  /** Adds a task to To do, or an idea to the backlog. It starts when its first message is sent. */
   "task.create": {
     params: {
       projectId: string;
       message: OutgoingMessage;
+      /** Unset: To do. */
+      status?: "todo" | "backlog";
       settings?: Partial<ThreadSettings>;
       /** Where it will work. Unset: wherever tasks usually start, when it starts. */
       workspace?: WorkspaceMode;
@@ -161,7 +163,10 @@ export interface Methods {
    * this task has started, the agent gets what was added as a message.
    */
   "task.merge": { params: { threadId: string; from: string[] }; result: Thread };
-  /** Takes one item off a task and puts it in To do as a task of its own, which it returns. */
+  /**
+   * Takes one item off a task and puts it in To do as a task of its own, which it returns. Off
+   * an idea in the backlog, it stays in the backlog.
+   */
   "task.split": { params: { threadId: string; itemId: string }; result: Thread };
 
   "queue.remove": { params: { threadId: string; queueId: string }; result: null };

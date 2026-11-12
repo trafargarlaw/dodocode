@@ -20,6 +20,7 @@ import {
 import type {
   AgentMove,
   ApprovalRequest,
+  IdeaRequest,
   ItemPatch,
   ItemWriter,
   NewItem,
@@ -47,6 +48,8 @@ export interface ThreadContext {
   adoptThread(thread: Thread): ThreadRuntime;
   /** Remembers the model and effort last used with a provider. */
   settingsUsed(settings: ThreadSettings): void;
+  /** Puts an idea the agent noticed in `from` in the backlog of its project, as a new task. */
+  addIdea(from: Thread, idea: IdeaRequest): Thread;
 }
 
 interface Turn {
@@ -448,6 +451,10 @@ export class ThreadRuntime {
       upsertJob: (job) => runtime.upsertJob(job),
       notice: (level, text) => runtime.notice(level, text),
       moveTask: (status) => runtime.agentMoved(status),
+      addIdea: (idea) => {
+        const added = runtime.ctx.addIdea(runtime.thread, idea);
+        return `Added “${added.title}” to the backlog on the person's board. They decide later whether it's worth doing.`;
+      },
     };
   }
 

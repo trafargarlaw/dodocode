@@ -409,9 +409,11 @@ function TaskBrief({ thread }: { thread: Thread }) {
     <div className="min-h-0 overflow-y-auto">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-6 pt-8 pb-6">
         <p className="text-[12.5px] text-muted-foreground">
-          {covers.length > 1
-            ? `In To do, covering ${covers.length} things as one piece of work. Start sends them all to the agent, with anything you add below.`
-            : "In To do. Start sends this to the agent, with anything you add below."}
+          {thread.task?.status === "backlog"
+            ? "In the backlog: an idea, not planned yet. Move it to To do when it's worth doing, or start it now: Start sends it to the agent, with anything you add below."
+            : covers.length > 1
+              ? `In To do, covering ${covers.length} things as one piece of work. Start sends them all to the agent, with anything you add below.`
+              : "In To do. Start sends this to the agent, with anything you add below."}
         </p>
         <ol className="flex flex-col gap-2">
           {covers.map((item) => {

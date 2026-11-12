@@ -63,8 +63,18 @@ export interface SubagentWriter extends ItemWriter {
   finish(status: "completed" | "failed" | "stopped", summary?: string): void;
 }
 
-/** The columns an agent can move its own task to. Only the person puts work in To do. */
-export type AgentMove = Exclude<TaskStatus, "todo">;
+/**
+ * The columns an agent can move its own task to. Only the person puts work in To do or the
+ * backlog.
+ */
+export type AgentMove = Exclude<TaskStatus, "todo" | "backlog">;
+
+/** An idea the agent noticed along the way, for the backlog. */
+export interface IdeaRequest {
+  title: string;
+  /** What someone picking it up later needs to know. */
+  details?: string;
+}
 
 /** What a thread gives its provider session. */
 export interface SessionHost {
@@ -98,6 +108,8 @@ export interface SessionHost {
    * to tell the agent, and throws when the thread can't go there.
    */
   moveTask(status: AgentMove): string;
+  /** Adds an idea to the backlog of the thread's project. Returns what to tell the agent. */
+  addIdea(idea: IdeaRequest): string;
 }
 
 export interface ProviderSession {

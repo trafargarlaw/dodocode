@@ -6,10 +6,13 @@ import { TASK_STATUS_LABEL, unstarted, type TaskStatus, type Thread } from "@dod
 /** A group in the sidebar: a column of the board, or the chats, which are not on the board. */
 export type GroupId = TaskStatus | "chats";
 
-/** The sidebar's groups, in order: the tasks, from under way to done, then the chats. */
+/**
+ * The sidebar's groups, in order: the tasks, from under way to done, then the chats. Ideas in the
+ * backlog aren't planned, so they stay on the board.
+ */
 export const GROUPS: readonly GroupId[] = ["progress", "review", "todo", "done", "chats"];
 
-/** The board's columns, in order. */
+/** The board's columns, in order. The backlog shows left of them, when it is open. */
 export const COLUMNS: readonly TaskStatus[] = ["todo", "progress", "review", "done"];
 
 export const GROUP_LABEL: Record<GroupId, string> = { ...TASK_STATUS_LABEL, chats: "Chats" };
@@ -103,21 +106,33 @@ export function sidebarGroups(
   return groups;
 }
 
+/** The board's columns, the backlog among them, and the ideas set aside as not worth doing. */
+export interface BoardColumns extends Record<TaskStatus, Thread[]> {
+  /** Ideas in the backlog marked "Not doing": archived, and kept in case they come back. */
+  notDoing: Thread[];
+}
+
 /** The board's columns: the tasks that pass the filter, in each column's order. */
-export function boardColumns(
-  threads: readonly Thread[],
-  filter: ListFilter,
-): Record<TaskStatus, Thread[]> {
+export function boardColumns(threads: readonly Thread[], filter: ListFilter): BoardColumns {
   const tree = threadTree(threads);
-  const columns: Record<TaskStatus, Thread[]> = { todo: [], progress: [], review: [], done: [] };
+  const columns: BoardColumns = {
+    backlog: [],
+    todo: [],
+    progress: [],
+    review: [],
+    done: [],
+    notDoing: [],
+  };
   for (const top of tree.tops) {
-    if (!top.task || top.archived) continue;
+    if (!top.task) continue;
     if (!matches(top, tree.children.get(top.id) ?? [], filter)) continue;
-    columns[top.task.status].push(top);
+    if (!top.archived) columns[top.task.status].push(top);
+    else if (top.task.status === "backlog") columns.notDoing.push(top);
   }
-  for (const status of COLUMNS) {
+  for (const status of ["backlog", ...COLUMNS] as const) {
     columns[status].sort(status === "done" ? byMoved : byAttention);
   }
+  columns.notDoing.sort(byUpdated);
   return columns;
 }
 
@@ -137,17 +152,23 @@ export function dropOf(card: Thread, target: TaskStatus | Thread): Drop {
     return target.task ? dropOf(card, target.task.status) : { kind: "none" };
   }
   if (card.task?.status === target) return { kind: "none" };
+  // Work under way is planned already.
+  if (target === "backlog" && !unstarted(card)) return { kind: "none" };
   if (target === "progress" && unstarted(card)) return { kind: "start" };
   return { kind: "move", status: target };
 }
 
-/** True when `card` can fold into `target`: only a task nobody started, into one not done. */
+/**
+ * True when `card` can fold into `target`: only a task nobody started, into one not done. Only
+ * ideas fold into an idea, so planned work doesn't drop back into the backlog that way.
+ */
 export function canMerge(card: Thread, target: Thread): boolean {
   return (
     card.id !== target.id &&
     unstarted(card) &&
     target.task !== undefined &&
     target.task.status !== "done" &&
+    (target.task.status !== "backlog" || card.task?.status === "backlog") &&
     card.projectId === target.projectId
   );
 }
@@ -161,6 +182,11 @@ function byAttention(a: Thread, b: Thread): number {
     Number(needsYou(b)) - Number(needsYou(a)) ||
     b.activityAt - a.activityAt
   );
+}
+
+/** The latest changed first. */
+function byUpdated(a: Thread, b: Thread): number {
+  return b.updatedAt - a.updatedAt;
 }
 
 /** Done: the latest finished first. */

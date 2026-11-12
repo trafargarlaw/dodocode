@@ -71,8 +71,27 @@ describe("moving", () => {
       null,
       "This task hasn't started, so there is no chat to go back to.",
     ],
+    [
+      "a started task, to the backlog",
+      todo("a", "A", { startedAt: 1 }),
+      "backlog",
+      "It has started, so it can't go back to the backlog.",
+    ],
   ] as const)("%s can't move", (_name, from, to, message) => {
     expect(() => moved(from, to, 5)).toThrow(message);
+  });
+
+  test("an idea an agent wrote down still says so once it is planned", () => {
+    const idea = todo("a", "A", {
+      task: { status: "backlog", covers: [], movedAt: 0, suggestedBy: "work" },
+    });
+    expect(moved(idea, "todo", 5).task).toEqual({
+      status: "todo",
+      covers: [],
+      movedAt: 5,
+      suggestedBy: "work",
+    });
+    expect(moved(todo("b", "B"), "backlog", 5).task?.status).toBe("backlog");
   });
 });
 
@@ -96,6 +115,9 @@ test("the first turn of a task in To do moves it to In progress, and marks it st
   const again = started(review, 9);
   expect(again.startedAt).toBe(5);
   expect(again.task?.status).toBe("review");
+  // An idea started straight from the backlog skips To do.
+  const idea = todo("b", "B", { task: { status: "backlog", covers: [], movedAt: 0 } });
+  expect(started(idea, 5).task?.status).toBe("progress");
 });
 
 describe("merging", () => {

@@ -203,6 +203,18 @@ export async function createTask(
   }
 }
 
+/** Writes an idea down in the backlog. It is a task nobody planned yet. */
+export async function createIdea(
+  projectId: string,
+  message: OutgoingMessage,
+): Promise<Thread | undefined> {
+  try {
+    return await server.call("task.create", { projectId, message, status: "backlog" });
+  } catch (error) {
+    return reportError("Could not add the idea", error);
+  }
+}
+
 /** Where a task in To do will work once it starts. */
 export function setWorkspace(threadId: string, workspace: WorkspaceMode): void {
   const transaction = threads.update(threadId, (draft) => {
@@ -319,7 +331,8 @@ export async function mergeTasks(threadId: string, from: string[]): Promise<Thre
 export async function splitItem(threadId: string, itemId: string): Promise<Thread | undefined> {
   try {
     const split = await server.call("task.split", { threadId, itemId });
-    toast.add({ title: "Split off into To do", description: split.title });
+    const into = split.task?.status === "backlog" ? "the backlog" : "To do";
+    toast.add({ title: `Split off into ${into}`, description: split.title });
     return split;
   } catch (error) {
     return reportError("Could not split it off", error);
@@ -347,6 +360,22 @@ export function setArchived(threadId: string, archived: boolean): void {
       }
     },
     (error: unknown) => reportError("Could not archive the thread", error),
+  );
+}
+
+/**
+ * Sets an idea in the backlog aside as not worth doing, or brings it back. It is archived, so it
+ * leaves the column but stays, under "Not doing".
+ */
+export function setNotDoing(thread: Thread, notDoing: boolean): void {
+  const transaction = threads.update(thread.id, (draft) => {
+    draft.archived = notDoing;
+  });
+  transaction.when("settled").then(
+    () => {
+      if (notDoing) withUndo("Not doing", thread.title, () => setNotDoing(thread, false));
+    },
+    (error: unknown) => reportError("Could not change the idea", error),
   );
 }
 

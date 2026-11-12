@@ -4,6 +4,7 @@ import type { TaskItem, TaskStatus, Thread } from "./domain";
 
 /** The board's name for each column. */
 export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
+  backlog: "Backlog",
   todo: "To do",
   progress: "In progress",
   review: "In review",

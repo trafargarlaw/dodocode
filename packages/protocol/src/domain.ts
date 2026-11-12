@@ -94,8 +94,11 @@ export type ThreadStatus =
   | "waiting"
   | "error";
 
-/** Where a task stands. A thread without a task is a chat. */
-export type TaskStatus = "todo" | "progress" | "review" | "done";
+/**
+ * Where a task stands. A thread without a task is a chat. A task in `backlog` is an idea: written
+ * down, not planned, and not started until it moves to To do or someone starts it.
+ */
+export type TaskStatus = "backlog" | "todo" | "progress" | "review" | "done";
 
 /** One thing a task is for, such as a fix the person wrote down. A task can cover several. */
 export interface TaskItem {
@@ -116,6 +119,8 @@ export interface Task {
   movedAt: number;
   /** Set when a chat became this task by itself, because the agent changed files. */
   promoted?: boolean;
+  /** Set when an agent wrote it down: the thread it was working in, which noticed it. */
+  suggestedBy?: string;
 }
 
 export interface Thread {

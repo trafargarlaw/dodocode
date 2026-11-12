@@ -21,7 +21,16 @@ import {
 import type { ModelOption, ProviderInfo, Question, ThreadSettings } from "@dodocode/protocol";
 
 import { AsyncQueue, errorText, log, newId, within } from "../util";
-import { MOVE_TASK, MOVE_TASK_DESCRIPTION, moveTask, moveTaskInput } from "./app-tools";
+import {
+  ADD_IDEA,
+  ADD_IDEA_DESCRIPTION,
+  addIdea,
+  addIdeaInput,
+  MOVE_TASK,
+  MOVE_TASK_DESCRIPTION,
+  moveTask,
+  moveTaskInput,
+} from "./app-tools";
 import { Transcript, type TranscriptHooks } from "./claude-transcript";
 import { APP_SERVER, APP_TOOLS, changesForInput, describeTool, relativePath } from "./claude-tools";
 import { agentEnv, findOnPath, HOME_BIN } from "./env";
@@ -80,6 +89,16 @@ function appServer(host: SessionHost) {
         moveTaskInput,
         async (args) => {
           const answer = moveTask(host, args);
+          return { content: [{ type: "text", text: answer.text }], isError: !answer.ok };
+        },
+        { alwaysLoad: true },
+      ),
+      sdkTool(
+        ADD_IDEA,
+        ADD_IDEA_DESCRIPTION,
+        addIdeaInput,
+        async (args) => {
+          const answer = addIdea(host, args);
           return { content: [{ type: "text", text: answer.text }], isError: !answer.ok };
         },
         { alwaysLoad: true },

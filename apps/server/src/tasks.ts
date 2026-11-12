@@ -19,12 +19,20 @@ export function itemFrom(message: OutgoingMessage): TaskItem {
   };
 }
 
-/** A task in To do that holds one item, ready to start. */
-export function todoTask(base: Thread, item: TaskItem, now: number): Thread {
-  return { ...base, title: item.title, task: { status: "todo", covers: [item], movedAt: now } };
+/** A task that holds one item, not started: in To do, ready to start, or an idea in the backlog. */
+export function todoTask(
+  base: Thread,
+  item: TaskItem,
+  now: number,
+  status: "todo" | "backlog" = "todo",
+): Thread {
+  return { ...base, title: item.title, task: { status, covers: [item], movedAt: now } };
 }
 
-/** The thread moved to `status`, or made a chat again by `null`; a chat made again stays one. */
+/**
+ * The thread moved to `status`, or made a chat again by `null`; a chat made again stays one.
+ * Only what nobody started goes to the backlog: work under way is planned already.
+ */
 export function moved(thread: Thread, status: TaskStatus | null, now: number): Thread {
   if (status === null) {
     if (!thread.task) return thread;
@@ -36,9 +44,18 @@ export function moved(thread: Thread, status: TaskStatus | null, now: number): T
   if (thread.kind === "subagent") throw new Error("A subagent's thread can't be a task.");
   if (!thread.projectId) throw new Error("Only a thread in a project can be a task.");
   if (thread.task?.status === status) return thread;
+  if (status === "backlog" && thread.startedAt !== undefined) {
+    throw new Error("It has started, so it can't go back to the backlog.");
+  }
+  const suggestedBy = thread.task?.suggestedBy;
   return {
     ...thread,
-    task: { covers: thread.task?.covers ?? [], status, movedAt: now },
+    task: {
+      covers: thread.task?.covers ?? [],
+      status,
+      movedAt: now,
+      ...(suggestedBy ? { suggestedBy } : {}),
+    },
     updatedAt: now,
   };
 }
@@ -58,10 +75,10 @@ export function promoted(thread: Thread, now: number): Thread | undefined {
   };
 }
 
-/** The thread as a turn starts in it: a task waiting in To do moves to In progress. */
+/** The thread as a turn starts in it: a task waiting in To do or the backlog moves to In progress. */
 export function started(thread: Thread, now: number): Thread {
   let next = thread.startedAt === undefined ? { ...thread, startedAt: now } : thread;
-  if (next.task?.status === "todo") {
+  if (next.task?.status === "todo" || next.task?.status === "backlog") {
     next = {
       ...next,
       task: { ...next.task, status: "progress", movedAt: now, promoted: undefined },
