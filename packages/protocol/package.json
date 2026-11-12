@@ -1,0 +1,17 @@
+{
+  "name": "@dodocode/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "description": "What the dodocode server and its clients say to each other",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@dodocode/typescript-config": "workspace:*",
+    "typescript": "~6.0.3"
+  }
+}

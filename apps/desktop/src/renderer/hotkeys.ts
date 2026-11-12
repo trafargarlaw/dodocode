@@ -11,6 +11,10 @@ export const appHotkeys = defineAppHotkeys({
     hotkey: "Mod+N",
     meta: { name: "New thread", group: "General" },
   },
+  "board.open": {
+    hotkey: ["G", "B"],
+    meta: { name: "Open the board", group: "General" },
+  },
   "shortcuts.open": {
     hotkey: "Mod+/",
     meta: { name: "Keyboard shortcuts", group: "General" },

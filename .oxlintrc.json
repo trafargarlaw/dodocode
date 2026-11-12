@@ -29,7 +29,8 @@
       "files": [
         "apps/desktop/src/main/**",
         "apps/desktop/src/preload/**",
-        "apps/desktop/electron.vite.config.ts"
+        "apps/desktop/electron.vite.config.ts",
+        "apps/server/**"
       ],
       "env": {
         "node": true,

@@ -1,10 +1,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { HotkeysProvider } from "@tanstack/react-hotkeys";
+import { Toaster } from "@dodocode/ui/components/toast";
 import { TooltipProvider } from "@dodocode/ui/components/tooltip";
 import { startTheme } from "@dodocode/ui/hooks/use-theme";
 import { App } from "./app";
 import { appHotkeys, loadCustomHotkeys, saveCustomHotkeys } from "./hotkeys";
+import { server } from "./server/connection";
 import "@dodocode/ui/globals.css";
 
 // Apply the saved theme before the first render, so the window opens in it.
@@ -20,6 +22,9 @@ startTheme({
   },
 });
 
+// Connect to the server: the app's collections load once it answers.
+server.start();
+
 // Read once: a new object on each render would replace the bindings people just changed.
 const customHotkeys = loadCustomHotkeys();
 
@@ -31,7 +36,9 @@ createRoot(document.getElementById("root") as HTMLElement).render(
       onCustomHotkeysChange={saveCustomHotkeys}
     >
       <TooltipProvider delay={500}>
-        <App />
+        <Toaster>
+          <App />
+        </Toaster>
       </TooltipProvider>
     </HotkeysProvider>
   </StrictMode>,

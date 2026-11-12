@@ -1,6 +1,25 @@
 import { join } from "node:path";
-import { app, BrowserWindow, ipcMain, nativeTheme, shell } from "electron";
-import { TITLE_BAR_HEIGHT, WINDOW_THEME_CHANNEL, type WindowTheme } from "../preload/bridge";
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
+import {
+  PICK_FOLDER_CHANNEL,
+  SERVER_INFO_CHANNEL,
+  TITLE_BAR_HEIGHT,
+  WINDOW_THEME_CHANNEL,
+  type WindowTheme,
+} from "../preload/bridge";
+import { ServerProcess } from "./server-process";
+
+// A development build keeps its projects, threads and settings apart from the installed app's,
+// so the two can run side by side.
+const dev = !app.isPackaged;
+if (dev) app.setPath("userData", `${app.getPath("userData")}-dev`);
+
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+  process.exit(0);
+}
+
+const server = new ServerProcess();
 
 const rendererDevUrl = process.env.ELECTRON_RENDERER_URL;
 // The page draws the title bar's background, so the window buttons sit on a clear overlay.
@@ -44,6 +63,7 @@ function createMainWindow(): void {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      additionalArguments: dev ? ["--dodocode-dev"] : [],
     },
   });
 
@@ -77,7 +97,27 @@ ipcMain.on(WINDOW_THEME_CHANNEL, (event, theme: unknown) => {
   });
 });
 
+ipcMain.handle(SERVER_INFO_CHANNEL, () => server.info());
+
+ipcMain.handle(PICK_FOLDER_CHANNEL, async (event) => {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  const options = { properties: ["openDirectory" as const, "createDirectory" as const] };
+  const result = window
+    ? await dialog.showOpenDialog(window, options)
+    : await dialog.showOpenDialog(options);
+  return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+
+// A second launch shows the window that is already open.
+app.on("second-instance", () => {
+  const [window] = BrowserWindow.getAllWindows();
+  if (!window) return;
+  if (window.isMinimized()) window.restore();
+  window.focus();
+});
+
 void app.whenReady().then(() => {
+  server.start();
   createMainWindow();
 
   app.on("activate", () => {
@@ -87,4 +127,15 @@ void app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+// The server finishes writing and stops its agents before the app exits.
+let serverStopped = false;
+app.on("before-quit", (event) => {
+  if (serverStopped) return;
+  event.preventDefault();
+  void server.stop().finally(() => {
+    serverStopped = true;
+    app.quit();
+  });
 });

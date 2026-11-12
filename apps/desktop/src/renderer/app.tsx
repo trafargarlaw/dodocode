@@ -1,4 +1,11 @@
-import { useRef, useState, type ComponentProps, type ReactNode, type RefObject } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import {
   HotkeysProvider,
   useAppHotkeys,
@@ -6,14 +13,14 @@ import {
   useHotkey,
   type AppHotkey,
 } from "@tanstack/react-hotkeys";
+import { useLiveQuery } from "@tanstack/react-db";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
-  Add01Icon,
   KeyboardIcon,
   PaintBoardIcon,
-  PencilEdit02Icon,
   Search01Icon,
   SidebarLeftIcon,
+  WifiDisconnected02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@dodocode/ui/components/button";
@@ -23,12 +30,21 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@dodocode/ui/components/resizable";
+import { Spinner } from "@dodocode/ui/components/spinner";
 import { ThemePicker, setAppearance, stepThemePreset } from "@dodocode/ui/components/theme-picker";
 import { useTheme } from "@dodocode/ui/hooks/use-theme";
 import { cn } from "@dodocode/ui/lib/utils";
 import { HeldKeys, Keys, Tip, WALLPAPER_KEYS } from "./keys";
+import { BoardView } from "./board";
+import { SearchDialog } from "./search";
+import { threads } from "./server/app-data";
+import { useConnectionState } from "./server/connection";
 import { ShortcutsDialog } from "./shortcuts-dialog";
+import { Sidebar } from "./sidebar";
 import { loadSidebar, saveSidebar, SIDEBAR } from "./sidebar-width";
+import { DraftView } from "./thread/draft-view";
+import { ThreadView } from "./thread/thread-view";
+import { getView, openBoard, openDraft, useView } from "./view";
 
 const isMac = window.dodocode.platform === "darwin";
 
@@ -37,9 +53,24 @@ export function App() {
   const { theme } = useTheme();
   const [themeOpen, setThemeOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const search = useRef<HTMLButtonElement>(null);
-  const newThread = useRef<HTMLButtonElement>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const newThreadRow = useRef<HTMLButtonElement>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
   const sidebar = useSidebar();
+
+  /** Opens a new thread, in the given project or else the one being looked at, ready to type. */
+  const newThread = (projectId?: string) => {
+    const view = getView();
+    const current =
+      view.kind === "thread"
+        ? (threads.get(view.threadId)?.projectId ?? null)
+        : view.kind === "draft"
+          ? view.projectId
+          : undefined;
+    openDraft(projectId ?? current);
+    // A draft already open keeps its composer, which the new view doesn't focus on its own.
+    requestAnimationFrame(() => composer.current?.focus());
+  };
 
   useHotkey(hotkeys["sidebar.toggle"], sidebar.toggle);
   useHotkey(hotkeys["theme.open"], () => setThemeOpen(true));
@@ -47,9 +78,9 @@ export function App() {
   useHotkey(hotkeys["appearance.toggle"], () =>
     setAppearance(theme.scheme === "dark" ? "light" : "dark"),
   );
-  // Search and threads are not built yet: their keys take you to where they will start.
-  useHotkey(hotkeys["search.open"], () => search.current?.focus());
-  useHotkey(hotkeys["thread.new"], () => newThread.current?.focus());
+  useHotkey(hotkeys["search.open"], () => setSearchOpen(true));
+  useHotkey(hotkeys["thread.new"], () => newThread());
+  useHotkey(hotkeys["board.open"], openBoard);
 
   return (
     <div className="grid h-screen grid-rows-[40px_minmax(0,1fr)] bg-wallpaper text-[13px] text-sidebar-foreground">
@@ -58,7 +89,7 @@ export function App() {
         onToggleSidebar={sidebar.toggle}
         themeOpen={themeOpen}
         onThemeOpenChange={setThemeOpen}
-        search={search}
+        onOpenSearch={() => setSearchOpen(true)}
       />
       <ResizablePanelGroup
         orientation="horizontal"
@@ -75,7 +106,7 @@ export function App() {
           groupResizeBehavior="preserve-pixel-size"
           onResize={sidebar.onResize}
         >
-          <Sidebar />
+          <Sidebar newThread={newThreadRow} onNewThread={() => newThread()} />
         </ResizablePanel>
         <ResizableHandle
           aria-label="Resize the sidebar"
@@ -91,10 +122,11 @@ export function App() {
           className="w-0 bg-transparent before:absolute before:inset-y-3 before:right-1 before:w-0.5 before:rounded-full before:transition-colors after:right-0 after:left-auto after:w-2.5 after:translate-x-0 focus-visible:ring-0 data-[separator=active]:before:bg-sidebar-ring data-[separator=focus]:before:bg-sidebar-ring data-[separator=hover]:before:bg-sidebar-border"
         />
         <ResizablePanel id="sheet" minSize={360}>
-          <Sheet newThread={newThread} onOpenShortcuts={() => setShortcutsOpen(true)} />
+          <Sheet composer={composer} onOpenShortcuts={() => setShortcutsOpen(true)} />
         </ResizablePanel>
       </ResizablePanelGroup>
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} onNewThread={newThread} />
     </div>
   );
 }
@@ -152,13 +184,13 @@ function TitleBar({
   onToggleSidebar,
   themeOpen,
   onThemeOpenChange,
-  search,
+  onOpenSearch,
 }: {
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   themeOpen: boolean;
   onThemeOpenChange: (open: boolean) => void;
-  search: RefObject<HTMLButtonElement | null>;
+  onOpenSearch: () => void;
 }) {
   const hotkeys = useAppHotkeys();
   const sidebarLabel = sidebarOpen ? "Hide the sidebar" : "Show the sidebar";
@@ -208,12 +240,12 @@ function TitleBar({
         </div>
       </div>
       <button
-        ref={search}
         type="button"
+        onClick={onOpenSearch}
         className="relative flex h-7 w-[min(400px,40vw)] items-center gap-2 rounded-lg border border-sidebar-border bg-sidebar-accent pr-1 pl-2.5 text-[12.5px] text-sidebar-muted-foreground transition-colors outline-none [-webkit-app-region:no-drag] hover:bg-sidebar-selected focus-visible:ring-2 focus-visible:ring-sidebar-ring"
       >
         <HugeiconsIcon icon={Search01Icon} strokeWidth={1.8} className="size-3.75 shrink-0" />
-        <span className="flex-1 truncate text-left">Search threads, files and commands</span>
+        <span className="flex-1 truncate text-left">Search threads, projects and actions</span>
         {hotkeys["search.open"].hotkey && (
           <Keys hotkey={hotkeys["search.open"].hotkey} className={WALLPAPER_KEYS} />
         )}
@@ -257,97 +289,69 @@ function ThemePanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function Sidebar() {
-  const hotkeys = useAppHotkeys();
-
-  return (
-    <nav aria-label="Threads" className="flex h-full min-h-0 flex-col gap-px px-2.5 pt-1.5 pb-2.5">
-      <SidebarRow icon={PencilEdit02Icon} className="relative font-medium">
-        <span className="flex-1">New thread</span>
-        <HeldKeys hotkey={hotkeys["thread.new"]} className="right-1.5" />
-      </SidebarRow>
-
-      <div className="flex items-center justify-between pt-3.5 pr-1 pb-1 pl-2 text-[11.5px] text-sidebar-muted-foreground">
-        <span>Projects</span>
-        <Tip label="Add a project" side="right">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            aria-label="Add a project"
-            className="text-sidebar-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
-          >
-            <HugeiconsIcon icon={Add01Icon} strokeWidth={2} />
-          </Button>
-        </Tip>
-      </div>
-      <p className="px-2 py-1.5 text-sidebar-muted-foreground">No projects yet.</p>
-    </nav>
-  );
-}
-
-function SidebarRow({
-  icon,
-  className,
-  children,
-  ...props
-}: ComponentProps<"button"> & { icon: typeof Add01Icon }) {
-  return (
-    <button
-      type="button"
-      className={cn(
-        "flex h-7.5 w-full items-center gap-2 rounded-[7px] px-2 text-left whitespace-nowrap transition-colors outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring",
-        className,
-      )}
-      {...props}
-    >
-      <HugeiconsIcon
-        icon={icon}
-        strokeWidth={1.8}
-        className="size-3.75 shrink-0 text-sidebar-muted-foreground"
-      />
-      {children}
-    </button>
-  );
-}
-
-// The floating sheet that holds the thread.
+// The floating sheet that holds the thread, the new thread being written, or the board.
 function Sheet({
-  newThread,
+  composer,
   onOpenShortcuts,
 }: {
-  newThread: RefObject<HTMLButtonElement | null>;
+  composer: RefObject<HTMLTextAreaElement | null>;
   onOpenShortcuts: () => void;
 }) {
   const hotkeys = useAppHotkeys();
+  const view = useView();
+  // The same query as the sidebar's, so the two share one result.
+  const { data: threadList = [], isReady } = useLiveQuery({
+    query: (q) => q.from({ thread: threads }).orderBy(({ thread }) => thread.activityAt, "desc"),
+  });
+  const missing =
+    view.kind === "thread" && isReady && !threadList.some((thread) => thread.id === view.threadId);
+
+  // The thread was deleted, here or in another window: start a new one instead.
+  useEffect(() => {
+    if (missing) openDraft();
+  }, [missing]);
 
   return (
-    <main className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden rounded-[14px] border border-black/8 bg-background text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.05),0_18px_48px_-20px_rgb(0_0_0/0.28)] dark:border-white/10 dark:shadow-[0_24px_60px_-20px_rgb(0_0_0/0.6)]">
-      <div className="grid place-items-center p-8">
-        <div className="flex max-w-sm flex-col items-center gap-3 text-center">
-          <h1 className="text-lg font-semibold tracking-tight">No thread open</h1>
-          <p className="text-muted-foreground">
-            Start a thread to work on a project. Your threads show in the sidebar.
-          </p>
-          <Button ref={newThread} className="mt-1">
-            <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={2} data-icon="inline-start" />
-            New thread
-          </Button>
-        </div>
-      </div>
-      <footer className="flex h-8.5 items-center gap-4 border-t px-4.5 text-[11.5px] text-muted-foreground">
-        <Hint hotkey={hotkeys["thread.new"]}>New thread</Hint>
-        <Hint hotkey={hotkeys["search.open"]}>Search</Hint>
-        <button
-          type="button"
-          onClick={onOpenShortcuts}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <HugeiconsIcon icon={KeyboardIcon} strokeWidth={1.8} className="size-3.5" />
-          Shortcuts
-          {hotkeys["shortcuts.open"].hotkey && <Keys hotkey={hotkeys["shortcuts.open"].hotkey} />}
-        </button>
-      </footer>
+    <main className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-[14px] border border-black/8 bg-background text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.05),0_18px_48px_-20px_rgb(0_0_0/0.28)] dark:border-white/10 dark:shadow-[0_24px_60px_-20px_rgb(0_0_0/0.6)]">
+      <ConnectionBanner />
+      {view.kind === "thread" ? (
+        <ThreadView key={view.threadId} threadId={view.threadId} inputRef={composer} />
+      ) : view.kind === "board" ? (
+        <BoardView />
+      ) : (
+        <DraftView projectId={view.projectId} inputRef={composer} />
+      )}
+      {view.kind === "draft" ? (
+        <footer className="flex h-8.5 items-center gap-4 border-t px-4.5 text-[11.5px] text-muted-foreground">
+          <Hint hotkey={hotkeys["thread.new"]}>New thread</Hint>
+          <Hint hotkey={hotkeys["search.open"]}>Search</Hint>
+          <button
+            type="button"
+            onClick={onOpenShortcuts}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <HugeiconsIcon icon={KeyboardIcon} strokeWidth={1.8} className="size-3.5" />
+            Shortcuts
+            {hotkeys["shortcuts.open"].hotkey && <Keys hotkey={hotkeys["shortcuts.open"].hotkey} />}
+          </button>
+        </footer>
+      ) : (
+        <div />
+      )}
     </main>
+  );
+}
+
+/** Says so while the server can't be reached. What is on screen stays, and catches up after. */
+function ConnectionBanner() {
+  const state = useConnectionState();
+  if (state !== "reconnecting") return <div />;
+  return (
+    <output className="flex items-center justify-center gap-2 border-b border-amber-500/25 bg-amber-500/10 px-4 py-1.5 text-[12.5px] text-amber-800 dark:text-amber-300">
+      <HugeiconsIcon icon={WifiDisconnected02Icon} strokeWidth={1.8} className="size-3.5" />
+      Lost the connection to the server. Reconnecting
+      <Spinner className="size-3" />
+    </output>
   );
 }
 

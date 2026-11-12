@@ -4,6 +4,9 @@ directories:
 files:
   - out/**/*
   - package.json
+# The Claude Agent SDK runs its platform's `claude` binary, which can't run from inside the asar.
+asarUnpack:
+  - node_modules/@anthropic-ai/claude-agent-sdk-*/**
 mac:
   target: [dmg, zip]
   category: public.app-category.developer-tools

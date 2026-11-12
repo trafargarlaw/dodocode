@@ -12,14 +12,23 @@
     "start": "electron-vite preview --skipBuild",
     "package": "electron-builder --dir",
     "dist": "electron-builder",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.322",
+    "ws": "8.22.2"
   },
   "devDependencies": {
+    "@dodocode/protocol": "workspace:*",
+    "@dodocode/server": "workspace:*",
     "@dodocode/typescript-config": "workspace:*",
     "@dodocode/ui": "workspace:*",
     "@hugeicons/core-free-icons": "^4.4.0",
     "@hugeicons/react": "^1.1.10",
     "@tailwindcss/vite": "^4.3.5",
+    "@tanstack/db": "1.0.0-rc.1.4",
+    "@tanstack/react-db": "1.0.0-rc.1.4",
     "@tanstack/react-hotkeys": "^0.23.1",
     "@types/node": "^24.19.2",
     "@types/react": "^19.1.8",
@@ -30,11 +39,14 @@
     "electron-vite": "6.0.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.21.0",
+    "remark-gfm": "^4.0.1",
     "shadcn": "^4.23.0",
     "tailwindcss": "^4.3.5",
     "typescript": "~6.0.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vitest": "^5.1.0"
   },
   "productName": "dodocode"
 }

@@ -4,7 +4,17 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "electron-vite";
 
 export default defineConfig({
-  main: {},
+  main: {
+    build: {
+      rolldownOptions: {
+        // The server runs in its own utility process, started by the main process.
+        input: {
+          index: resolve("src/main/index.ts"),
+          server: resolve("../server/src/main.ts"),
+        },
+      },
+    },
+  },
   preload: {
     build: {
       // Sandboxed preload scripts cannot be ES modules, so the preload is built as CommonJS.

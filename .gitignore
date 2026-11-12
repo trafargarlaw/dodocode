@@ -29,3 +29,6 @@ release
 
 # Turborepo
 .turbo
+
+# TypeScript incremental build info
+*.tsbuildinfo

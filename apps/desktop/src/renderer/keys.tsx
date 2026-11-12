@@ -37,16 +37,18 @@ export function Tip({
   children,
 }: {
   label: string;
-  hotkey?: AppHotkey;
+  /** An app hotkey, as bound, or keys a control handles itself. */
+  hotkey?: AppHotkey | Hotkey;
   side?: "top" | "bottom" | "left" | "right";
   children: ReactElement;
 }) {
+  const keys = typeof hotkey === "object" && "hotkey" in hotkey ? hotkey.hotkey : hotkey;
   return (
     <Tooltip>
       <TooltipTrigger render={children} />
       <TooltipContent side={side}>
         {label}
-        {hotkey?.hotkey && <Keys hotkey={hotkey.hotkey} />}
+        {keys && <Keys hotkey={keys} />}
       </TooltipContent>
     </Tooltip>
   );
