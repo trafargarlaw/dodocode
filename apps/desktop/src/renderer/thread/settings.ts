@@ -28,38 +28,30 @@ export function findModel(
 }
 
 /**
- * Switches to another provider, back to the model and effort last used with it when it still
- * offers that model, else to its first model.
+ * Switches to a model, of the same agent or another. The effort stays when the model takes it;
+ * going back to another agent's model takes the effort last used with that model.
  */
-export function withProvider(
+export function withModel(
   current: ThreadSettings,
-  provider: ProviderId,
+  choice: { provider: ProviderId; model: string },
   providers: readonly ProviderInfo[],
-  last: Settings["lastByProvider"],
+  last: Settings["lastByProvider"] = {},
 ): ThreadSettings {
-  if (provider === current.provider) return current;
-  const models = providers.find((entry) => entry.id === provider)?.models ?? [];
-  const remembered = last[provider];
-  const model = models.find((entry) => entry.id === remembered?.model) ?? models[0];
+  const remembered = choice.provider === current.provider ? undefined : last[choice.provider];
+  const wanted = remembered?.model === choice.model ? remembered.effort : current.effort;
   return {
     ...current,
-    provider,
-    model: model?.id ?? remembered?.model ?? "",
-    effort: effortFor(model, remembered?.effort ?? current.effort),
+    provider: choice.provider,
+    model: choice.model,
+    effort: effortFor(findModel(providers, choice.provider, choice.model), wanted),
   };
 }
 
-/** Switches model, keeping the effort when the new model takes it. */
-export function withModel(
-  current: ThreadSettings,
-  model: string,
-  providers: readonly ProviderInfo[],
-): ThreadSettings {
-  return {
-    ...current,
-    model,
-    effort: effortFor(findModel(providers, current.provider, model), current.effort),
-  };
+/** The effort one step lower (-1) or higher (1) than the current one, stopping at either end. */
+export function stepEffort(efforts: readonly string[], current: string, step: -1 | 1): string {
+  const at = efforts.indexOf(current);
+  if (at < 0) return (step > 0 ? efforts[0] : efforts.at(-1)) ?? current;
+  return efforts[Math.min(Math.max(at + step, 0), efforts.length - 1)] ?? current;
 }
 
 const EFFORT_LABEL: Record<string, string> = {
@@ -73,4 +65,19 @@ const EFFORT_LABEL: Record<string, string> = {
 
 export function effortLabel(effort: string): string {
   return EFFORT_LABEL[effort] ?? effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+const EFFORT_HINT: Record<string, string> = {
+  minimal: "Barely thinks before it answers. The fastest.",
+  low: "Thinks briefly. Quick, for simple work.",
+  medium: "Thinks a while: a balance of speed and care.",
+  high: "Thinks longer, for harder problems.",
+  xhigh: "Thinks a lot longer. Slower, for the hardest problems.",
+  max: "Thinks as long as it needs. The slowest.",
+  ultra: "Thinks the longest of all. The slowest.",
+};
+
+/** What an effort level means for how the model works, when the level is a known one. */
+export function effortHint(effort: string): string | undefined {
+  return EFFORT_HINT[effort];
 }

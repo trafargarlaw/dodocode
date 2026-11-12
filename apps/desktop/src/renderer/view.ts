@@ -24,16 +24,28 @@ function load(): View {
 }
 
 let current = load();
+/** Whether the new thread is asking which project it works in. Not kept between launches. */
+let choosing = false;
 const listeners = new Set<() => void>();
 
-function set(view: View): void {
+function notify(): void {
+  for (const listener of Array.from(listeners)) listener();
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function set(view: View, choose = false): void {
   current = view;
+  choosing = choose;
   try {
     localStorage.setItem(KEY, JSON.stringify(view));
   } catch {
     // The view still changes; it just won't be there next launch.
   }
-  for (const listener of Array.from(listeners)) listener();
+  notify();
 }
 
 export function openThread(threadId: string): void {
@@ -41,8 +53,22 @@ export function openThread(threadId: string): void {
   set({ kind: "thread", threadId });
 }
 
-export function openDraft(projectId?: string | null): void {
-  set({ kind: "draft", projectId });
+/**
+ * Opens a new thread. `chooseProject` asks which project it works in, with this one picked
+ * already, so a person who wanted it only has to go on.
+ */
+export function openDraft(
+  projectId?: string | null,
+  { chooseProject = false }: { chooseProject?: boolean } = {},
+): void {
+  set({ kind: "draft", projectId }, chooseProject);
+}
+
+/** Opens or closes the new thread's question of which project it works in. */
+export function setChoosingProject(open: boolean): void {
+  if (choosing === open) return;
+  choosing = open;
+  notify();
 }
 
 export function openBoard(): void {
@@ -54,11 +80,9 @@ export function getView(): View {
 }
 
 export function useView(): View {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => current,
-  );
+  return useSyncExternalStore(subscribe, () => current);
+}
+
+export function useChoosingProject(): boolean {
+  return useSyncExternalStore(subscribe, () => choosing);
 }

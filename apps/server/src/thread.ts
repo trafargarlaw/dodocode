@@ -1,22 +1,24 @@
 // One thread while the server runs: its items, its turn, its queue, and the provider session that
 // does the work. Subagent threads use the same class, written to by their parent's session.
 
-import type {
-  ApprovalDecision,
-  ApprovalItem,
-  BackgroundJob,
-  Item,
-  OutgoingMessage,
-  ProviderId,
-  Question,
-  QueuedMessage,
-  ServerEvent,
-  Thread,
-  ThreadSettings,
-  ThreadStatus,
+import {
+  TASK_STATUS_LABEL,
+  type ApprovalDecision,
+  type ApprovalItem,
+  type BackgroundJob,
+  type Item,
+  type OutgoingMessage,
+  type ProviderId,
+  type Question,
+  type QueuedMessage,
+  type ServerEvent,
+  type Thread,
+  type ThreadSettings,
+  type ThreadStatus,
 } from "@dodocode/protocol";
 
 import type {
+  AgentMove,
   ApprovalRequest,
   ItemPatch,
   ItemWriter,
@@ -30,7 +32,7 @@ import type {
   TurnOutcome,
 } from "./providers/types";
 import type { Store } from "./store";
-import { started } from "./tasks";
+import { moved, started } from "./tasks";
 import { errorText, log, newId, titleFrom, within } from "./util";
 
 /** What a thread needs from the rest of the server. */
@@ -226,6 +228,16 @@ export class ThreadRuntime {
     this.cancelPending();
     await this.disposeSession();
     this.flush();
+  }
+
+  /**
+   * Ends the agent's session and forgets it, as when the folder it worked in is gone: the next
+   * turn starts a new session, where the thread works then.
+   */
+  async forgetSession(): Promise<void> {
+    await this.disposeSession();
+    this.resume = {};
+    this.ctx.store.saveResumeIds(this.thread.id, {});
   }
 
   /** Marks what was left unfinished when the server last stopped. Runs once, at start. */
@@ -435,7 +447,16 @@ export class ThreadRuntime {
       openSubagent: (options) => runtime.openSubagent(options),
       upsertJob: (job) => runtime.upsertJob(job),
       notice: (level, text) => runtime.notice(level, text),
+      moveTask: (status) => runtime.agentMoved(status),
     };
+  }
+
+  /** The agent moves its task, as the person asked. The tool call shows in the thread. */
+  private agentMoved(status: AgentMove): string {
+    const label = TASK_STATUS_LABEL[status];
+    if (this.thread.task?.status === status) return `It is in ${label} already.`;
+    this.replace(moved(this.thread, status, Date.now()));
+    return `Moved it to ${label} on the person's board.`;
   }
 
   private requestApproval(

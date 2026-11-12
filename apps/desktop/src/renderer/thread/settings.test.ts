@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { ModelOption, ProviderInfo, ThreadSettings } from "@dodocode/protocol";
-import { effortFor, withModel, withProvider } from "./settings";
+import { effortFor, stepEffort, withModel } from "./settings";
 
 function model(id: string, efforts: string[], defaultEffort?: string): ModelOption {
   return { id, label: id, efforts, defaultEffort };
@@ -48,68 +48,80 @@ describe("effortFor", () => {
   });
 });
 
-describe("withProvider", () => {
+describe("withModel", () => {
   test.each<
     [
       string,
-      ThreadSettings["provider"],
-      Parameters<typeof withProvider>[3],
-      Partial<ThreadSettings>,
+      ThreadSettings,
+      { provider: ThreadSettings["provider"]; model: string },
+      Parameters<typeof withModel>[3],
+      string,
     ]
   >([
     [
-      "goes back to the model and effort last used",
-      "codex",
-      { codex: { model: "gpt-b", effort: "minimal" } },
-      { provider: "codex", model: "gpt-b", effort: "minimal" },
-    ],
-    [
-      "takes the first model when the one last used is gone",
-      "codex",
-      { codex: { model: "retired", effort: "high" } },
-      { provider: "codex", model: "gpt-a", effort: "high" },
-    ],
-    [
-      "takes the first model and its default effort with nothing remembered",
-      "codex",
-      {},
-      { provider: "codex", model: "gpt-a", effort: "medium" },
-    ],
-  ])("%s", (_name, provider, last, expected) => {
-    expect(withProvider(onOpus, provider, providers, last)).toEqual({ ...onOpus, ...expected });
-  });
-
-  test("keeps the remembered model of a provider that hasn't listed its models", () => {
-    const unlisted = providers.map((entry) =>
-      entry.id === "codex" ? { ...entry, models: [] } : entry,
-    );
-    expect(
-      withProvider(onOpus, "codex", unlisted, { codex: { model: "gpt-b", effort: "low" } }),
-    ).toEqual({
-      ...onOpus,
-      provider: "codex",
-      model: "gpt-b",
-      effort: "low",
-    });
-  });
-});
-
-describe("withModel", () => {
-  test.each<[string, ThreadSettings, string, string]>([
-    [
       "keeps an effort the new model takes",
       { ...onOpus, provider: "codex", model: "gpt-a", effort: "low" },
-      "gpt-b",
+      { provider: "codex", model: "gpt-b" },
+      {},
       "low",
     ],
-    ["drops the effort for a model that takes none", onOpus, "haiku", ""],
+    [
+      "drops the effort for a model that takes none",
+      onOpus,
+      { provider: "claude", model: "haiku" },
+      {},
+      "",
+    ],
     [
       "falls back to the new model's default",
       { ...onOpus, provider: "codex", model: "gpt-b", effort: "minimal" },
-      "gpt-a",
+      { provider: "codex", model: "gpt-a" },
+      {},
       "medium",
     ],
-  ])("%s", (_name, current, next, effort) => {
-    expect(withModel(current, next, providers)).toEqual({ ...current, model: next, effort });
+    [
+      "keeps the effort across agents when the other agent's model takes it",
+      { ...onOpus, effort: "high" },
+      { provider: "codex", model: "gpt-a" },
+      {},
+      "high",
+    ],
+    [
+      "goes back to the effort last used with another agent's model",
+      onOpus,
+      { provider: "codex", model: "gpt-a" },
+      { codex: { model: "gpt-a", effort: "low" } },
+      "low",
+    ],
+    [
+      "uses a remembered effort only for the model it was used with",
+      onOpus,
+      { provider: "codex", model: "gpt-a" },
+      { codex: { model: "gpt-b", effort: "minimal" } },
+      "medium",
+    ],
+    [
+      "ignores what was remembered for the agent already in use",
+      { ...onOpus, effort: "low" },
+      { provider: "claude", model: "opus" },
+      { claude: { model: "opus", effort: "max" } },
+      "low",
+    ],
+  ])("%s", (_name, current, choice, last, effort) => {
+    expect(withModel(current, choice, providers, last)).toEqual({ ...current, ...choice, effort });
+  });
+});
+
+describe("stepEffort", () => {
+  const levels = ["low", "medium", "high"];
+  test.each<[string, string, -1 | 1, string]>([
+    ["steps up", "medium", 1, "high"],
+    ["steps down", "medium", -1, "low"],
+    ["stops at the top", "high", 1, "high"],
+    ["stops at the bottom", "low", -1, "low"],
+    ["starts from the bottom going up from a level the model lacks", "max", 1, "low"],
+    ["starts from the top going down from a level the model lacks", "", -1, "high"],
+  ])("%s", (_name, current, step, expected) => {
+    expect(stepEffort(levels, current, step)).toBe(expected);
   });
 });

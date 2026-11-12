@@ -11,7 +11,7 @@ const bridge: DodocodeBridge = {
   dev: process.argv.includes("--dodocode-dev"),
   setWindowTheme: (theme) => ipcRenderer.send(WINDOW_THEME_CHANNEL, theme),
   serverInfo: () => ipcRenderer.invoke(SERVER_INFO_CHANNEL),
-  pickFolder: () => ipcRenderer.invoke(PICK_FOLDER_CHANNEL),
+  pickFolder: (defaultPath) => ipcRenderer.invoke(PICK_FOLDER_CHANNEL, defaultPath),
 };
 
 contextBridge.exposeInMainWorld("dodocode", bridge);

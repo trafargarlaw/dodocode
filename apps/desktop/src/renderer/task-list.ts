@@ -1,24 +1,18 @@
 // How the sidebar and the board sort the threads: chats and tasks, by where each task is, with
 // what needs the person first. Both are views of one list, so they share these rules.
 
-import { unstarted, type TaskStatus, type Thread } from "@dodocode/protocol";
+import { TASK_STATUS_LABEL, unstarted, type TaskStatus, type Thread } from "@dodocode/protocol";
 
 /** A group in the sidebar: a column of the board, or the chats, which are not on the board. */
 export type GroupId = TaskStatus | "chats";
 
-/** The sidebar's groups, in order: the work under way first, and what's done last. */
-export const GROUPS: readonly GroupId[] = ["progress", "review", "todo", "chats", "done"];
+/** The sidebar's groups, in order: the tasks, from under way to done, then the chats. */
+export const GROUPS: readonly GroupId[] = ["progress", "review", "todo", "done", "chats"];
 
 /** The board's columns, in order. */
 export const COLUMNS: readonly TaskStatus[] = ["todo", "progress", "review", "done"];
 
-export const GROUP_LABEL: Record<GroupId, string> = {
-  todo: "To do",
-  progress: "In progress",
-  review: "In review",
-  done: "Done",
-  chats: "Chats",
-};
+export const GROUP_LABEL: Record<GroupId, string> = { ...TASK_STATUS_LABEL, chats: "Chats" };
 
 /** A chat left this long drops out of the sidebar, behind "Show more". Search still finds it. */
 export const CHAT_AGE_MS = 7 * 24 * 60 * 60 * 1000;

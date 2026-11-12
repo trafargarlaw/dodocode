@@ -3,6 +3,7 @@
 
 import type {
   BackgroundJob,
+  FileChange,
   ImageRef,
   Item,
   Project,
@@ -12,6 +13,7 @@ import type {
   TaskStatus,
   Thread,
   ThreadSettings,
+  WorkspaceMode,
 } from "./domain";
 
 /** What the person sends: words and pasted images. */
@@ -36,20 +38,69 @@ export interface ThreadDetail {
 
 export type ApprovalDecision = "allow" | "allow_session" | "deny";
 
+/** What a thread's work changed, file by file. */
+export interface WorkChanges {
+  /**
+   * The branch the changes are against, for work in a worktree. Unset for work in the project's
+   * folder, whose changes are what isn't committed yet.
+   */
+  against?: string;
+  files: FileChange[];
+  /** Set when there was more than could be shown. */
+  truncated?: boolean;
+}
+
+/** The folders in a folder on the server's machine, to pick a project's folder from. */
+export interface FolderListing {
+  /** The folder listed, absolute, as the system writes it. */
+  path: string;
+  /** The folder above it. Unset at the top of a drive. */
+  parent?: string;
+  /** The home folder, which a path can start with `~` for. */
+  home: string;
+  folders: FolderEntry[];
+}
+
+export interface FolderEntry {
+  name: string;
+  /** Set when it holds a git repository at its top. */
+  git?: boolean;
+}
+
+/** How merging a worktree's branch went. When it conflicts, nothing changed. */
+export type MergeResult =
+  | { merged: true; thread: Thread }
+  | { merged: false; base: string; conflicts: string[] };
+
 /** Every method a client can call, with what it takes and what it gives back. */
 export interface Methods {
   "app.snapshot": { params: Record<string, never>; result: Snapshot };
 
   "project.add": { params: { path: string }; result: Project };
+  /**
+   * Makes a new folder `name` in `parent`, starts a git repository in it with an empty first
+   * commit, so a worktree has something to branch from, and adds it as a project.
+   */
+  "project.create": { params: { parent: string; name: string }; result: Project };
+  /** Clones a repository into a new folder `name` in `parent`, and adds it as a project. */
+  "project.clone": { params: { url: string; parent: string; name: string }; result: Project };
+  /** Lists the folders in a folder. A path can start with `~` for the home folder. */
+  "folder.list": { params: { path: string }; result: FolderListing };
   "project.remove": { params: { projectId: string }; result: null };
   "project.openInEditor": { params: { projectId: string }; result: null };
 
   /**
    * Starts a thread, and its first turn when a message comes with it. Without a project, the
-   * agent works in a folder of the thread's own.
+   * agent works in a folder of the thread's own. Sent to a `worktree`, it is a task from the
+   * start, and works in a worktree of its own.
    */
   "thread.create": {
-    params: { projectId?: string; settings?: Partial<ThreadSettings>; message?: OutgoingMessage };
+    params: {
+      projectId?: string;
+      settings?: Partial<ThreadSettings>;
+      message?: OutgoingMessage;
+      workspace?: WorkspaceMode;
+    };
     result: Thread;
   };
   /** Gives the thread's items and sends its changes until the client closes it. */
@@ -57,7 +108,8 @@ export interface Methods {
   "thread.close": { params: { threadId: string }; result: null };
   /**
    * Sends a message. An idle thread starts a turn with it. While a turn runs, `queue` (the
-   * default) holds it for the next turn, and `steer` sends it into the running turn.
+   * default) holds it for the next turn, and `steer` sends it into the running turn. A thread's
+   * first message makes its worktree, when it works in one.
    */
   "thread.send": {
     params: { threadId: string; message: OutgoingMessage; mode?: "queue" | "steer" };
@@ -71,10 +123,22 @@ export interface Methods {
       settings?: Partial<ThreadSettings>;
       pinned?: boolean;
       archived?: boolean;
+      /** Only before the thread's first turn. */
+      workspace?: WorkspaceMode;
     };
     result: Thread;
   };
+  /** Deletes a thread. Its worktree goes too, after its changes are committed to its branch. */
   "thread.delete": { params: { threadId: string }; result: null };
+  /** Opens the folder the thread's agent works in, in VS Code. */
+  "thread.openInEditor": { params: { threadId: string }; result: null };
+  /** What the thread's work changed: against its base branch in a worktree, else uncommitted. */
+  "thread.changes": { params: { threadId: string }; result: WorkChanges };
+  /**
+   * Commits what the agent left in the thread's worktree, merges its branch into the branch it
+   * came from, then removes the worktree and the branch. A task is then done.
+   */
+  "thread.merge": { params: { threadId: string }; result: MergeResult };
 
   /** Adds a task to To do. It starts when its first message is sent. */
   "task.create": {
@@ -82,6 +146,8 @@ export interface Methods {
       projectId: string;
       message: OutgoingMessage;
       settings?: Partial<ThreadSettings>;
+      /** Where it will work. Unset: wherever tasks usually start, when it starts. */
+      workspace?: WorkspaceMode;
     };
     result: Thread;
   };

@@ -99,9 +99,12 @@ ipcMain.on(WINDOW_THEME_CHANNEL, (event, theme: unknown) => {
 
 ipcMain.handle(SERVER_INFO_CHANNEL, () => server.info());
 
-ipcMain.handle(PICK_FOLDER_CHANNEL, async (event) => {
+ipcMain.handle(PICK_FOLDER_CHANNEL, async (event, defaultPath: unknown) => {
   const window = BrowserWindow.fromWebContents(event.sender);
-  const options = { properties: ["openDirectory" as const, "createDirectory" as const] };
+  const options = {
+    properties: ["openDirectory" as const, "createDirectory" as const],
+    ...(typeof defaultPath === "string" && defaultPath ? { defaultPath } : {}),
+  };
   const result = window
     ? await dialog.showOpenDialog(window, options)
     : await dialog.showOpenDialog(options);

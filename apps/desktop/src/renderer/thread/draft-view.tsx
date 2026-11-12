@@ -1,9 +1,8 @@
-import { useState, type Ref } from "react";
+import { useState, type RefObject } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
-import type { ThreadSettings } from "@dodocode/protocol";
+import type { ThreadSettings, WorkspaceMode } from "@dodocode/protocol";
 import { Spinner } from "@dodocode/ui/components/spinner";
 import { toast } from "@dodocode/ui/components/toast";
-import { cn } from "@dodocode/ui/lib/utils";
 import { useListFilter } from "../list-filter";
 import { ProjectPicker } from "../project-picker";
 import {
@@ -13,14 +12,17 @@ import {
   settings as settingsRows,
   threads,
 } from "../server/app-data";
-import { openDraft, openThread } from "../view";
-import { Composer, PICKER } from "./composer";
+import { openDraft, openThread, setChoosingProject, useChoosingProject } from "../view";
+import { Composer } from "./composer";
+import { StartBranch, WorkspacePicker } from "./workspace";
 
 /** The words of a new thread wait under this key until it is started. */
 export const DRAFT_KEY = "draft";
 
 /** Settings picked for the next new thread. Kept while the window shows other threads. */
 let picked: ThreadSettings | undefined;
+/** Where the next new thread works, when the person picked. A question asked runs in place. */
+let pickedWorkspace: WorkspaceMode | undefined;
 
 /**
  * A new thread: ask anything and it starts as a chat, or put it in To do as a task to start
@@ -32,9 +34,10 @@ export function DraftView({
 }: {
   /** The project picked, `null` for none, or unset for the usual one. */
   projectId: string | null | undefined;
-  inputRef: Ref<HTMLTextAreaElement>;
+  inputRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   const filter = useListFilter();
+  const choosing = useChoosingProject();
   const { data: projectList = [], isReady } = useLiveQuery({
     query: (q) => q.from({ project: projects }).orderBy(({ project }) => project.createdAt, "asc"),
   });
@@ -46,6 +49,7 @@ export function DraftView({
     query: (q) => q.from({ row: settingsRows }).findOne(),
   });
   const [chosen, setChosen] = useState(picked);
+  const [chosenWorkspace, setChosenWorkspace] = useState(pickedWorkspace);
   const settings = chosen ?? saved?.defaults;
 
   const known = (id: string | null | undefined) =>
@@ -67,67 +71,94 @@ export function DraftView({
     picked = next;
     setChosen(next);
   };
+  const chooseWorkspace = (next: WorkspaceMode) => {
+    pickedWorkspace = next;
+    setChosenWorkspace(next);
+  };
+  // Only a project in a git repository has a branch to work apart from.
+  const git = project?.git;
+  const workspace: WorkspaceMode = git ? (chosenWorkspace ?? "local") : "local";
 
   return (
-    <div className="grid h-full grid-rows-[minmax(0,1fr)_auto_minmax(0,1.4fr)] px-5">
-      <div />
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
-        <div className="flex flex-col gap-1 px-1">
-          <h1 className="text-xl font-semibold tracking-tight">Ask anything, or start some work</h1>
-          <p className="text-[13px] text-muted-foreground">
-            {project
-              ? `It works in ${project.name}. Add it to To do to start it later.`
-              : "Without a project, it works in a folder of its own."}
-          </p>
-        </div>
-        <Composer
-          draftKey={DRAFT_KEY}
-          settings={settings}
-          onSettingsChange={choose}
-          running={false}
-          placeholder="Ask a question, or describe the work. Paste or drop screenshots."
-          inputRef={inputRef}
-          focusOnMount
-          leading={
-            <ProjectPicker
-              value={project?.id ?? null}
-              onChange={(next) => openDraft(next)}
-              projects={projectList}
-              none="No project"
-              side="top"
-              className={cn(PICKER, "text-foreground")}
-            />
-          }
-          alternate={{
-            label: "Add to To do",
-            blocked: project ? undefined : "Pick a project to add a task: a task works in one",
-            onSend: async (message) => {
-              if (!project) return false;
-              const task = await createTask(project.id, message, settings);
-              if (!task) return false;
-              const id = toast.add({
-                title: "Added to To do",
-                description: task.title,
-                actionProps: {
-                  children: "Open",
-                  onClick: () => {
-                    toast.close(id);
-                    openThread(task.id);
-                  },
-                },
-              });
-              return true;
-            },
-          }}
-          onSend={async (message) => {
-            const thread = await createThread(project?.id, settings, message);
-            if (!thread) return false;
-            // The server keeps these as the defaults for the next thread.
-            picked = undefined;
-            openThread(thread.id);
-            return true;
-          }}
+    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)]">
+      {/* The project the new thread works in, where a thread shows its own. */}
+      <header className="flex h-11 min-w-0 items-center gap-2 border-b px-3">
+        <ProjectPicker
+          value={project?.id ?? null}
+          onChange={(next) => openDraft(next)}
+          projects={projectList}
+          none="No project"
+          // Asked when a new thread opens: once answered, or let be, the message comes next.
+          open={choosing}
+          onOpenChange={setChoosingProject}
+          finalFocus={inputRef}
+          className="h-7 px-2 text-[13px] font-medium"
         />
+      </header>
+      <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto_minmax(0,1.1fr)] px-5">
+        <div />
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-5">
+          <h1 className="px-1 text-xl font-semibold tracking-tight">
+            Ask anything, or start some work
+          </h1>
+          <Composer
+            draftKey={DRAFT_KEY}
+            settings={settings}
+            onSettingsChange={choose}
+            running={false}
+            placeholder="Ask a question, or describe the work. Paste or drop screenshots."
+            inputRef={inputRef}
+            focusOnMount={!choosing}
+            where={
+              git && (
+                <WorkspacePicker value={workspace} onChange={chooseWorkspace} branch={git.branch} />
+              )
+            }
+            branch={git && <StartBranch branch={git.branch} mode={workspace} />}
+            alternate={{
+              label: "Add to To do",
+              blocked: project ? undefined : "Pick a project to add a task: a task works in one",
+              onSend: async (message) => {
+                if (!project) return false;
+                // A task left in To do works where tasks usually start, unless the person picked.
+                const task = await createTask(
+                  project.id,
+                  message,
+                  settings,
+                  git ? chosenWorkspace : undefined,
+                );
+                if (!task) return false;
+                const id = toast.add({
+                  title: "Added to To do",
+                  description: task.title,
+                  actionProps: {
+                    children: "Open",
+                    onClick: () => {
+                      toast.close(id);
+                      openThread(task.id);
+                    },
+                  },
+                });
+                return true;
+              },
+            }}
+            onSend={async (message) => {
+              const thread = await createThread(
+                project?.id,
+                settings,
+                message,
+                workspace === "worktree" ? "worktree" : undefined,
+              );
+              if (!thread) return false;
+              // The server keeps these as the defaults for the next thread. The next question asked
+              // runs in place again.
+              picked = undefined;
+              pickedWorkspace = undefined;
+              openThread(thread.id);
+              return true;
+            }}
+          />
+        </div>
       </div>
     </div>
   );

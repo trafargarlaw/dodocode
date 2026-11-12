@@ -10,6 +10,13 @@ import type {
 } from "@dodocode/protocol";
 
 import { errorText, log, wellFormed } from "../util";
+import {
+  MOVE_TASK,
+  MOVE_TASK_DESCRIPTION,
+  MOVE_TASK_SCHEMA,
+  moveTask,
+  moveTaskTitle,
+} from "./app-tools";
 import { relativePath } from "./claude-tools";
 import { CodexProcess, RpcError } from "./codex-rpc";
 import { findOnPath } from "./env";
@@ -350,7 +357,8 @@ class ItemMapper {
         return {
           kind: "other" as const,
           name: String(item.tool ?? "tool"),
-          title: String(item.tool ?? "Tool"),
+          title:
+            item.tool === MOVE_TASK ? moveTaskTitle(item.arguments) : String(item.tool ?? "Tool"),
           input: item.arguments,
         };
       case "webSearch":
@@ -534,7 +542,18 @@ class CodexSession implements ProviderSession, Route {
       }
     }
     if (!threadId) {
-      const result = (await server.request("thread/start", common)) as { thread: { id: string } };
+      // A thread keeps the tools it starts with; resuming it takes no new ones.
+      const result = (await server.request("thread/start", {
+        ...common,
+        dynamicTools: [
+          {
+            type: "function",
+            name: MOVE_TASK,
+            description: MOVE_TASK_DESCRIPTION,
+            inputSchema: MOVE_TASK_SCHEMA,
+          },
+        ],
+      })) as { thread: { id: string } };
       threadId = result.thread.id;
       this.host.saveResumeId(threadId);
     }
@@ -837,6 +856,13 @@ class CodexSession implements ProviderSession, Route {
                   ? "abort"
                   : "denied",
         };
+      }
+      case "item/tool/call": {
+        const answer =
+          params.tool === MOVE_TASK
+            ? moveTask(this.host, params.arguments)
+            : { ok: false, text: `dodocode has no tool named ${String(params.tool)}.` };
+        return { contentItems: [{ type: "inputText", text: answer.text }], success: answer.ok };
       }
       default:
         throw new RpcError(-32601, `dodocode does not handle ${method}.`);

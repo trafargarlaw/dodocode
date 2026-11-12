@@ -13,6 +13,8 @@ import {
   type TaskStatus,
   type Thread,
   type ThreadSettings,
+  type WorkChanges,
+  type WorkspaceMode,
 } from "@dodocode/protocol";
 import { toast } from "@dodocode/ui/components/toast";
 import { GROUP_LABEL } from "../task-list";
@@ -86,13 +88,14 @@ export const threads = createCollection<Thread, string>({
   // time the call returns and the optimistic copy goes.
   onUpdate: async ({ transaction }) => {
     for (const mutation of transaction.mutations) {
-      const { title, settings, pinned, archived } = mutation.changes;
+      const { title, settings, pinned, archived, workspace } = mutation.changes;
       await server.call("thread.update", {
         threadId: mutation.key,
         title,
         settings,
         pinned,
         archived,
+        workspace,
       });
     }
   },
@@ -136,16 +139,6 @@ export function reportError(title: string, error: unknown): undefined {
   return undefined;
 }
 
-export async function addProject(): Promise<Project | undefined> {
-  const path = await window.dodocode.pickFolder();
-  if (!path) return undefined;
-  try {
-    return await server.call("project.add", { path });
-  } catch (error) {
-    return reportError("Could not add the project", error);
-  }
-}
-
 export function removeProject(projectId: string): void {
   const transaction = projects.delete(projectId);
   transaction
@@ -159,16 +152,35 @@ export function openInEditor(projectId: string): void {
     .catch((error: unknown) => reportError("Could not open VS Code", error));
 }
 
-/** Starts a chat with its first message, in a project or in a folder of its own. */
+/** Opens the folder a thread's agent works in: its worktree, or its project's folder. */
+export function openThreadInEditor(threadId: string): void {
+  server
+    .call("thread.openInEditor", { threadId })
+    .catch((error: unknown) => reportError("Could not open VS Code", error));
+}
+
+/**
+ * Starts a thread with its first message, in a project or in a folder of its own. Sent to a
+ * worktree, it is a task from the start.
+ */
 export async function createThread(
   projectId: string | undefined,
   threadSettings: ThreadSettings,
   message: OutgoingMessage,
+  workspace?: WorkspaceMode,
 ): Promise<Thread | undefined> {
   try {
-    return await server.call("thread.create", { projectId, settings: threadSettings, message });
+    return await server.call("thread.create", {
+      projectId,
+      settings: threadSettings,
+      message,
+      workspace,
+    });
   } catch (error) {
-    return reportError("Could not start the thread", error);
+    return reportError(
+      workspace === "worktree" ? "Could not start it in a worktree" : "Could not start the thread",
+      error,
+    );
   }
 }
 
@@ -177,12 +189,77 @@ export async function createTask(
   projectId: string,
   message: OutgoingMessage,
   threadSettings?: ThreadSettings,
+  workspace?: WorkspaceMode,
 ): Promise<Thread | undefined> {
   try {
-    return await server.call("task.create", { projectId, message, settings: threadSettings });
+    return await server.call("task.create", {
+      projectId,
+      message,
+      settings: threadSettings,
+      workspace,
+    });
   } catch (error) {
     return reportError("Could not add the task", error);
   }
+}
+
+/** Where a task in To do will work once it starts. */
+export function setWorkspace(threadId: string, workspace: WorkspaceMode): void {
+  const transaction = threads.update(threadId, (draft) => {
+    draft.workspace = workspace;
+  });
+  transaction
+    .when("settled")
+    .catch((error: unknown) => reportError("Could not change where it works", error));
+}
+
+/** What a thread's work changed, file by file. */
+export function threadChanges(threadId: string): Promise<WorkChanges> {
+  return server.call("thread.changes", { threadId });
+}
+
+/**
+ * Merges a thread's worktree into the branch it came from. When it conflicts, nothing changes,
+ * and the agent can be asked to sort it out on its branch.
+ */
+export async function mergeWork(thread: Thread): Promise<boolean> {
+  let result;
+  try {
+    result = await server.call("thread.merge", { threadId: thread.id });
+  } catch (error) {
+    reportError("Could not merge", error);
+    return false;
+  }
+  if (result.merged) {
+    toast.add({
+      title: `Merged into ${thread.worktree?.base ?? "its branch"}`,
+      description: thread.title,
+    });
+    return true;
+  }
+  const { base, conflicts } = result;
+  const id = toast.add({
+    title: `It conflicts with ${base}`,
+    description: `Nothing was merged. Conflicts in ${conflictList(conflicts)}.`,
+    type: "error",
+    actionProps: {
+      children: "Ask the agent to fix it",
+      onClick: () => {
+        toast.close(id);
+        const text = `Merging this branch into ${base} conflicts in ${conflictList(conflicts)}. Merge ${base} into this branch, resolve the conflicts, and commit the result.`;
+        server
+          .call("thread.send", { threadId: thread.id, message: { text, images: [] } })
+          .catch((error: unknown) => reportError("Could not ask the agent", error));
+      },
+    },
+  });
+  return false;
+}
+
+function conflictList(files: string[]): string {
+  return files.length > 3
+    ? `${files.slice(0, 3).join(", ")} and ${files.length - 3} more`
+    : files.join(", ");
 }
 
 /**

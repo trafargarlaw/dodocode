@@ -9,40 +9,17 @@ import {
   type Ref,
 } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
-import type {
-  AccessMode,
-  ImageRef,
-  OutgoingMessage,
-  ProviderInfo,
-  ThreadSettings,
-} from "@dodocode/protocol";
-import {
-  ArrowUp02Icon,
-  Cancel01Icon,
-  ImageAdd01Icon,
-  Shield01Icon,
-  StopIcon,
-  ZapIcon,
-} from "@hugeicons/core-free-icons";
+import type { ImageRef, OutgoingMessage, ProviderInfo, ThreadSettings } from "@dodocode/protocol";
+import { ArrowUp02Icon, Cancel01Icon, ImageAdd01Icon, StopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@dodocode/ui/components/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@dodocode/ui/components/select";
 import { Spinner } from "@dodocode/ui/components/spinner";
 import { cn } from "@dodocode/ui/lib/utils";
 import { Keys, Tip } from "../keys";
-import {
-  providers as providerRows,
-  reportError,
-  settings as settingsRows,
-} from "../server/app-data";
+import { providers as providerRows, reportError } from "../server/app-data";
 import { uploadImage } from "./images";
-import { effortLabel, findModel, withModel, withProvider } from "./settings";
+import { ModelPicker } from "./model-picker";
+import { AccessPicker } from "./pickers";
 
 const isMac = window.dodocode.platform === "darwin";
 
@@ -121,8 +98,13 @@ export interface ComposerProps {
   inputRef?: Ref<HTMLTextAreaElement>;
   /** Puts the cursor in the box when it first shows. */
   focusOnMount?: boolean;
-  /** Controls before the settings, such as the project for a new thread. */
-  leading?: ReactNode;
+  /**
+   * Where the work happens, at the start of the row under the box: the project, and whether it
+   * runs in the project's folder or a worktree.
+   */
+  where?: ReactNode;
+  /** The branch it works on, at the end of that row, before the access it has. */
+  branch?: ReactNode;
   /** What the send button says it does, when it does more than send. */
   sendLabel?: string;
   /** Lets the button send with nothing written, as when it starts a task. */
@@ -147,7 +129,8 @@ export function Composer({
   onStop,
   inputRef,
   focusOnMount,
-  leading,
+  where,
+  branch,
   sendLabel,
   allowEmpty,
   alternate,
@@ -316,7 +299,7 @@ export function Composer({
           // The scrollbar's track stops short of the box's rounded corner.
           className="field-sizing-content max-h-[40vh] min-h-13 w-full resize-none bg-transparent px-3.5 pt-3 pb-1 text-[13.5px] leading-relaxed outline-none placeholder:text-muted-foreground [&::-webkit-scrollbar-track]:mt-2"
         />
-        <div className="flex min-w-0 items-center gap-0.5 px-2 pt-1 pb-2">
+        <div className="flex min-w-0 items-center gap-1 px-2 pt-1 pb-2">
           <Tip label="Attach images">
             <Button
               variant="ghost"
@@ -339,13 +322,8 @@ export function Composer({
               event.target.value = "";
             }}
           />
-          {leading}
-          <SettingsPickers
-            settings={settings}
-            providers={providerList}
-            onChange={onSettingsChange}
-          />
-          <div className="ml-auto flex shrink-0 items-center gap-1 pl-1">
+          <div className="ml-auto flex min-w-0 items-center gap-1">
+            <ModelPicker settings={settings} providers={providerList} onChange={onSettingsChange} />
             {running && onStop && (
               <Tip label="Stop the agent">
                 <Button
@@ -363,7 +341,7 @@ export function Composer({
                 label={alternate.blocked ?? alternate.label}
                 hotkey={alternate.blocked ? undefined : "Alt+Enter"}
               >
-                <span className="inline-flex">
+                <span className="inline-flex shrink-0">
                   <Button
                     variant="outline"
                     size="sm"
@@ -387,7 +365,7 @@ export function Composer({
               }
             >
               {/* A disabled button gets no pointer events, so its tip hangs on a wrapper. */}
-              <span className="inline-flex">
+              <span className="inline-flex shrink-0">
                 <Button
                   size="icon-sm"
                   aria-label={running ? "Queue the message" : (sendLabel ?? "Send")}
@@ -402,11 +380,20 @@ export function Composer({
           </div>
         </div>
       </div>
-      <ComposerHints running={running} reason={reason} />
+      {/* Where the work happens, out of the way of the message. */}
+      <div className="flex min-w-0 items-center gap-2 px-1.5">
+        <div className="flex min-w-0 items-center gap-0.5">{where}</div>
+        <div className="ml-auto flex min-w-0 items-center gap-0.5">
+          {branch}
+          <AccessPicker settings={settings} onChange={onSettingsChange} />
+        </div>
+      </div>
+      <ComposerHints running={running && !empty} reason={reason} />
     </div>
   );
 }
 
+/** Why the message can't go, or while a turn runs and there is a message, what the keys do. */
 function ComposerHints({ running, reason }: { running: boolean; reason: string | undefined }) {
   const mod = isMac ? "Meta" : "Control";
   if (reason) {
@@ -446,160 +433,4 @@ function providerBlock(provider: ProviderInfo | undefined, id: string): string |
 
 function hasFiles(event: DragEvent): boolean {
   return event.dataTransfer.types.includes("Files");
-}
-
-export const PICKER =
-  "h-7 max-w-44 min-w-0 gap-1 border-transparent bg-transparent px-2 text-[12.5px] text-muted-foreground shadow-none hover:bg-muted hover:text-foreground data-popup-open:bg-muted data-popup-open:text-foreground dark:bg-transparent dark:hover:bg-muted";
-
-const ACCESS: { value: AccessMode; label: string; description: string }[] = [
-  {
-    value: "supervised",
-    label: "Supervised",
-    description: "Asks before each command and edit",
-  },
-  {
-    value: "full",
-    label: "Full access",
-    description: "Runs commands and edits files without asking",
-  },
-];
-
-function SettingsPickers({
-  settings,
-  providers,
-  onChange,
-}: {
-  settings: ThreadSettings;
-  providers: ProviderInfo[];
-  onChange: (settings: ThreadSettings) => void;
-}) {
-  const { data: saved } = useLiveQuery({
-    query: (q) => q.from({ row: settingsRows }).findOne(),
-  });
-  const last = saved?.lastByProvider ?? {};
-  const provider = providers.find((entry) => entry.id === settings.provider);
-  const models = provider?.models ?? [];
-  const model = findModel(providers, settings.provider, settings.model);
-  const efforts = model?.efforts ?? (settings.effort ? [settings.effort] : []);
-
-  const providerItems = providers.map((entry) => ({ value: entry.id, label: entry.label }));
-  if (!provider) providerItems.push({ value: settings.provider, label: settings.provider });
-  const modelItems = models.map((entry) => ({ value: entry.id, label: entry.label }));
-  if (!model && settings.model) modelItems.push({ value: settings.model, label: settings.model });
-
-  return (
-    <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
-      <Select
-        value={settings.provider}
-        items={providerItems}
-        onValueChange={(value) => {
-          if (value) onChange(withProvider(settings, value as ProviderInfo["id"], providers, last));
-        }}
-      >
-        <SelectTrigger size="sm" aria-label="Agent" className={PICKER}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent side="top" align="start" alignItemWithTrigger={false} className="min-w-52">
-          {providers.map((entry) => (
-            <SelectItem
-              key={entry.id}
-              value={entry.id}
-              disabled={entry.status === "missing" || entry.status === "error"}
-            >
-              <span className="flex min-w-0 flex-col">
-                <span>{entry.label}</span>
-                {entry.status !== "ready" && (
-                  <span className="text-xs text-muted-foreground">
-                    {entry.message ?? (entry.status === "checking" ? "Checking…" : entry.status)}
-                  </span>
-                )}
-              </span>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {modelItems.length > 0 && (
-        <Select
-          value={settings.model}
-          items={modelItems}
-          onValueChange={(value) => {
-            if (value) onChange(withModel(settings, value, providers));
-          }}
-        >
-          <SelectTrigger size="sm" aria-label="Model" className={PICKER}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent side="top" align="start" alignItemWithTrigger={false} className="min-w-60">
-            {models.map((entry) => (
-              <SelectItem key={entry.id} value={entry.id}>
-                <span className="flex min-w-0 flex-col">
-                  <span>{entry.label}</span>
-                  {entry.description && (
-                    <span className="text-xs whitespace-normal text-muted-foreground">
-                      {entry.description}
-                    </span>
-                  )}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
-
-      {efforts.length > 0 && (
-        <Select
-          value={settings.effort}
-          items={efforts.map((effort) => ({ value: effort, label: effortLabel(effort) }))}
-          onValueChange={(value) => {
-            if (value) onChange({ ...settings, effort: value });
-          }}
-        >
-          <SelectTrigger size="sm" aria-label="Reasoning effort" className={PICKER}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent side="top" align="start" alignItemWithTrigger={false} className="min-w-36">
-            {efforts.map((effort) => (
-              <SelectItem key={effort} value={effort}>
-                {effortLabel(effort)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      )}
-
-      <Select
-        value={settings.access}
-        items={ACCESS.map(({ value, label }) => ({ value, label }))}
-        onValueChange={(value) => {
-          if (value) onChange({ ...settings, access: value });
-        }}
-      >
-        <SelectTrigger
-          size="sm"
-          aria-label="Access"
-          className={cn(PICKER, settings.access === "full" && "text-amber-700 dark:text-amber-400")}
-        >
-          <HugeiconsIcon
-            icon={settings.access === "full" ? ZapIcon : Shield01Icon}
-            strokeWidth={1.8}
-            className="size-3.5"
-          />
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent side="top" align="start" alignItemWithTrigger={false} className="min-w-64">
-          {ACCESS.map((entry) => (
-            <SelectItem key={entry.value} value={entry.value}>
-              <span className="flex min-w-0 flex-col">
-                <span>{entry.label}</span>
-                <span className="text-xs whitespace-normal text-muted-foreground">
-                  {entry.description}
-                </span>
-              </span>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
 }

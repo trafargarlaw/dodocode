@@ -4,6 +4,7 @@ import {
   unstarted,
   type BackgroundJob,
   type Item,
+  type Project,
   type QueuedMessage,
   type Thread,
 } from "@dodocode/protocol";
@@ -18,6 +19,7 @@ import {
   Scissor01Icon,
   Tick02Icon,
   UserMultiple02Icon,
+  ViewIcon,
   VisualStudioCodeIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -45,8 +47,10 @@ import { Tip } from "../keys";
 import {
   changeThreadSettings,
   moveTask,
-  openInEditor,
+  openThreadInEditor,
   projects,
+  setWorkspace,
+  settings as settingsRows,
   splitItem,
   startTask,
   threads,
@@ -66,6 +70,7 @@ import { openThread } from "../view";
 import { toBlocks } from "./blocks";
 import { clearDraft, Composer, readyDraft } from "./composer";
 import { BlockView, Images, Working } from "./messages";
+import { MergeButton, workspaceSlots } from "./workspace";
 
 export function ThreadView({
   threadId,
@@ -95,6 +100,19 @@ export function ThreadView({
     queryKey: ["jobs", threadId],
     query: (q) => q.from({ job: data.jobs }).orderBy(({ job }) => job.startedAt, "asc"),
   });
+  const projectId = thread?.projectId ?? "";
+  const { data: project } = useLiveQuery({
+    queryKey: ["project", projectId],
+    query: (q) =>
+      q
+        .from({ row: projects })
+        .where(({ row }) => eq(row.id, projectId))
+        .findOne(),
+  });
+  const { data: saved } = useLiveQuery({
+    queryKey: ["settings"],
+    query: (q) => q.from({ row: settingsRows }).findOne(),
+  });
 
   // The app's list loads first, and the window leaves a thread that is gone.
   if (!thread) return null;
@@ -103,10 +121,16 @@ export function ThreadView({
   const running = thread.status === "running" || thread.status === "waiting";
   // A task nobody started has no messages yet, only what it covers.
   const fresh = unstarted(thread) && itemList.length === 0;
+  const slots = workspaceSlots({
+    thread,
+    project,
+    mode: thread.workspace ?? saved?.workspace ?? "worktree",
+    onModeChange: (workspace) => setWorkspace(threadId, workspace),
+  });
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]">
-      <ThreadHeader thread={thread} jobs={jobs} />
+      <ThreadHeader thread={thread} project={project} jobs={jobs} />
       {items.isLoadingError ? (
         <div className="grid place-items-center p-8 text-center text-muted-foreground">
           This thread could not be opened. It may have been deleted.
@@ -135,6 +159,7 @@ export function ThreadView({
                 placeholder="Add anything else the agent should know, then start"
                 sendLabel="Start"
                 allowEmpty
+                {...slots}
                 onSend={(message) =>
                   startTask(thread, message.text || message.images.length > 0 ? message : undefined)
                 }
@@ -150,6 +175,7 @@ export function ThreadView({
                 onSend={(message, mode) => sendMessage(threadId, message, mode)}
                 onStop={() => interrupt(threadId)}
                 inputRef={inputRef}
+                {...slots}
               />
             )}
           </>
@@ -203,15 +229,15 @@ function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
   );
 }
 
-function ThreadHeader({ thread, jobs }: { thread: Thread; jobs: BackgroundJob[] }) {
-  const { data: project } = useLiveQuery({
-    queryKey: ["project", thread.projectId ?? ""],
-    query: (q) =>
-      q
-        .from({ row: projects })
-        .where(({ row }) => eq(row.id, thread.projectId ?? ""))
-        .findOne(),
-  });
+function ThreadHeader({
+  thread,
+  project,
+  jobs,
+}: {
+  thread: Thread;
+  project: Project | undefined;
+  jobs: BackgroundJob[];
+}) {
   const parentId = thread.parentId;
 
   return (
@@ -246,13 +272,19 @@ function ThreadHeader({ thread, jobs }: { thread: Thread; jobs: BackgroundJob[] 
         {thread.kind === "main" && <PrimaryAction thread={thread} />}
         {jobs.length > 0 && <JobsButton threadId={thread.id} jobs={jobs} />}
         {project && (
-          <Tip label="Open in VS Code">
+          <Tip
+            label={
+              thread.worktree?.mergedAt === undefined && thread.worktree
+                ? "Open its worktree in VS Code"
+                : "Open in VS Code"
+            }
+          >
             <Button
               variant="ghost"
               size="icon-sm"
               aria-label="Open in VS Code"
               className="text-muted-foreground"
-              onClick={() => openInEditor(project.id)}
+              onClick={() => openThreadInEditor(thread.id)}
             >
               <HugeiconsIcon icon={VisualStudioCodeIcon} strokeWidth={1.8} />
             </Button>
@@ -306,7 +338,10 @@ function StatusPill({ thread }: { thread: Thread }) {
   );
 }
 
-/** The step that comes next for a task: start it, finish it, or open it again. */
+/**
+ * The steps that come next for a task: start it; put it in review and finish it; or open it
+ * again. Nothing moves to review on its own: the person does it here, or asks the agent to.
+ */
 function PrimaryAction({ thread }: { thread: Thread }) {
   if (!thread.task) return null;
   if (unstarted(thread)) {
@@ -323,22 +358,47 @@ function PrimaryAction({ thread }: { thread: Thread }) {
     );
   }
   if (thread.task.status === "done") {
+    // Merged work is gone from its worktree, so there is nothing to reopen there.
+    if (thread.worktree?.mergedAt !== undefined) return null;
     return (
       <Button variant="outline" size="sm" onClick={() => void moveTask(thread, "progress")}>
         Reopen
       </Button>
     );
   }
+  // Work in a worktree is done once it is back on its branch. With nothing changed, there is
+  // nothing to merge, and it is done as it is.
+  const worktree = thread.worktree;
+  const finish =
+    worktree?.base && worktree.mergedAt === undefined && (worktree.changed?.files ?? 1) > 0 ? (
+      <MergeButton thread={thread} />
+    ) : (
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5"
+        onClick={() => void moveTask(thread, "done", true)}
+      >
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
+        Mark done
+      </Button>
+    );
+  if (thread.task.status !== "progress") return finish;
   return (
-    <Button
-      variant="outline"
-      size="sm"
-      className="gap-1.5"
-      onClick={() => void moveTask(thread, "done", true)}
-    >
-      <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} />
-      Mark done
-    </Button>
+    <>
+      <Tip label="Put it in In review, to look over before it's done">
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5"
+          onClick={() => void moveTask(thread, "review", true)}
+        >
+          <HugeiconsIcon icon={ViewIcon} strokeWidth={1.8} />
+          Move to review
+        </Button>
+      </Tip>
+      {finish}
+    </>
   );
 }
 

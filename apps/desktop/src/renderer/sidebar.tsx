@@ -1,4 +1,4 @@
-import { useState, type ComponentProps, type ReactNode, type Ref } from "react";
+import { useRef, useState, type ComponentProps, type ReactNode, type RefObject } from "react";
 import { useAppHotkeys } from "@tanstack/react-hotkeys";
 import { useLiveQuery } from "@tanstack/react-db";
 import type { Project, Thread } from "@dodocode/protocol";
@@ -7,8 +7,9 @@ import {
   Archive02Icon,
   ArchiveArrowUpIcon,
   ArrowDown01Icon,
-  ArrowRight01Icon,
+  Cancel01Icon,
   Delete02Icon,
+  FilterIcon,
   Folder01Icon,
   FolderAddIcon,
   KanbanIcon,
@@ -33,8 +34,11 @@ import {
 import { Button } from "@dodocode/ui/components/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
@@ -45,9 +49,9 @@ import {
 } from "@dodocode/ui/components/dropdown-menu";
 import { cn } from "@dodocode/ui/lib/utils";
 import { HeldKeys, Tip } from "./keys";
+import { openPalette } from "./palette/palette";
 import { setListFilter, useListFilter } from "./list-filter";
 import {
-  addProject,
   deleteThread,
   moveTask,
   openInEditor,
@@ -58,7 +62,14 @@ import {
   setPinned,
   threads,
 } from "./server/app-data";
-import { GROUP_LABEL, needsYou, sidebarGroups, type GroupId, type SidebarGroup } from "./task-list";
+import {
+  GROUP_LABEL,
+  needsYou,
+  sidebarGroups,
+  type GroupId,
+  type ListFilter,
+  type SidebarGroup,
+} from "./task-list";
 import { Attention, MoveItems, StatusGlyph } from "./task-ui";
 import { ago, useNow } from "./time";
 import { openBoard, openDraft, openThread, useView } from "./view";
@@ -69,13 +80,11 @@ const COLLAPSED_KEY = "dodocode:collapsed-groups";
 /** Done starts folded: what's finished matters less than what isn't. */
 const COLLAPSED_AT_FIRST: GroupId[] = ["done"];
 
-export function Sidebar({
-  newThread,
-  onNewThread,
-}: {
-  newThread: Ref<HTMLButtonElement>;
-  onNewThread: () => void;
-}) {
+/**
+ * The threads, as two lists: the tasks, by where each one is, and the chats. Above them, the
+ * board, and the buttons that narrow the lists or start something, each an icon its tooltip names.
+ */
+export function Sidebar({ onNewThread }: { onNewThread: () => void }) {
   const hotkeys = useAppHotkeys();
   const view = useView();
   const now = useNow();
@@ -89,6 +98,7 @@ export function Sidebar({
   });
   const collapsed = useCollapsedGroups();
   const [expanded, setExpanded] = useState<ReadonlySet<GroupId>>(new Set());
+  const filterButton = useRef<HTMLButtonElement>(null);
 
   const groups = sidebarGroups(threadList, {
     openId,
@@ -97,6 +107,8 @@ export function Sidebar({
     limit: LIST_LIMIT,
     now,
   });
+  const tasks = groups.filter((group) => group.id !== "chats");
+  const chats = groups.find((group) => group.id === "chats");
   const names = new Map(projectList.map((project) => [project.id, project.name]));
   // A row names its project only while the list mixes them.
   const mixed = !filter.projectId && new Set(threadList.map((thread) => thread.projectId)).size > 1;
@@ -106,6 +118,7 @@ export function Sidebar({
       !thread.archived &&
       (!filter.projectId || thread.projectId === filter.projectId),
   ).length;
+  const filtered = filter.projectId !== undefined || filter.needsYou;
 
   const expand = (id: GroupId, on: boolean) =>
     setExpanded((current) => {
@@ -114,48 +127,64 @@ export function Sidebar({
       else next.delete(id);
       return next;
     });
+  const rowsProps = (group: SidebarGroup) => ({
+    group,
+    expanded: expanded.has(group.id),
+    onExpand: (on: boolean) => expand(group.id, on),
+    openId,
+    now,
+    projectName: (thread: Thread) =>
+      mixed && thread.projectId ? names.get(thread.projectId) : undefined,
+  });
 
   return (
     <nav aria-label="Threads" className="flex h-full min-h-0 flex-col px-2.5 pt-1.5 pb-2.5">
-      <SidebarRow
-        ref={newThread}
-        icon={PencilEdit02Icon}
-        className={cn("relative font-medium", view.kind === "draft" && "bg-sidebar-selected")}
-        onClick={onNewThread}
-      >
-        <span className="flex-1">New thread</span>
-        <HeldKeys hotkey={hotkeys["thread.new"]} className="right-1.5" />
-      </SidebarRow>
-      <SidebarRow
-        icon={KanbanIcon}
-        aria-current={view.kind === "board" ? "page" : undefined}
-        className={cn(view.kind === "board" && "bg-sidebar-selected hover:bg-sidebar-selected")}
-        onClick={openBoard}
-      >
-        <span className="flex-1">Board</span>
-      </SidebarRow>
-
-      <FilterBar projects={projectList} projectId={filter.projectId} openId={openId}>
-        <button
-          type="button"
-          aria-pressed={filter.needsYou}
-          onClick={() => setListFilter({ needsYou: !filter.needsYou })}
+      {/* A place to go on the left. On the right, what narrows the lists, then what starts something. */}
+      <div className="flex items-center gap-0.5">
+        <SidebarRow
+          icon={KanbanIcon}
+          aria-current={view.kind === "board" ? "page" : undefined}
           className={cn(
-            CHIP,
-            "shrink-0",
-            filter.needsYou && "bg-sidebar-selected text-sidebar-foreground",
+            "min-w-0 flex-1",
+            view.kind === "board" && "bg-sidebar-selected hover:bg-sidebar-selected",
           )}
+          onClick={openBoard}
         >
-          Needs you
-          {waiting > 0 && (
-            <span className="rounded-full bg-amber-500 px-1.25 text-[10.5px] leading-4 font-semibold text-white tabular-nums">
-              {waiting}
-            </span>
-          )}
-        </button>
-      </FilterBar>
+          <span className="flex-1">Board</span>
+        </SidebarRow>
+        <FilterMenu
+          projects={projectList}
+          filter={filter}
+          waiting={waiting}
+          triggerRef={filterButton}
+        />
+        <Tip label="Add a project">
+          <HeaderButton aria-label="Add a project" onClick={() => openPalette("add-project")}>
+            <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.8} />
+          </HeaderButton>
+        </Tip>
+        <Tip label="New thread" hotkey={hotkeys["thread.new"]}>
+          <HeaderButton
+            aria-label="New thread"
+            aria-current={view.kind === "draft" ? "page" : undefined}
+            onClick={onNewThread}
+            className="aria-[current=page]:bg-sidebar-selected aria-[current=page]:text-sidebar-foreground"
+          >
+            <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.8} />
+            <HeldKeys hotkey={hotkeys["thread.new"]} className="top-full right-0 mt-1" />
+          </HeaderButton>
+        </Tip>
+      </div>
 
-      <div className="-mx-2.5 flex min-h-0 flex-1 flex-col gap-px overflow-y-auto px-2.5">
+      <ActiveFilters
+        project={projectList.find((entry) => entry.id === filter.projectId)}
+        needsYou={filter.needsYou}
+        openId={openId}
+        // A chip goes once it clears its filter, so focus waits on the filter button instead.
+        onCleared={() => filterButton.current?.focus()}
+      />
+
+      <div className="-mx-2.5 flex min-h-0 flex-1 flex-col overflow-y-auto px-2.5">
         {isReady &&
           (filter.needsYou && waiting === 0 ? (
             // The open thread still shows, so this says why nothing else does.
@@ -163,71 +192,90 @@ export function Sidebar({
           ) : groups.length === 0 ? (
             <EmptyList
               text={
-                filter.needsYou || filter.projectId !== undefined
-                  ? "Nothing here. Change the filter to see more."
-                  : "Nothing yet. Ask anything, or add a task to To do."
+                filtered
+                  ? "No threads match the filter."
+                  : "Nothing yet. Start a new thread to ask anything, or to plan some work."
               }
             />
           ) : null)}
-        {groups.map((group) => (
-          <Group
-            key={group.id}
-            group={group}
-            collapsed={collapsed.has(group.id)}
-            onToggle={() => collapsed.toggle(group.id)}
-            expanded={expanded.has(group.id)}
-            onExpand={(on) => expand(group.id, on)}
-            openId={openId}
-            now={now}
-            projectName={(thread) =>
-              mixed && thread.projectId ? names.get(thread.projectId) : undefined
-            }
-          />
-        ))}
+        {tasks.length > 0 && (
+          <Section title="Tasks">
+            {tasks.map((group) => (
+              <Group
+                key={group.id}
+                collapsed={collapsed.has(group.id)}
+                onToggle={() => collapsed.toggle(group.id)}
+                {...rowsProps(group)}
+              />
+            ))}
+          </Section>
+        )}
+        {chats && (
+          <Section title="Chats">
+            <GroupRows collapsed={false} {...rowsProps(chats)} />
+          </Section>
+        )}
       </div>
     </nav>
   );
 }
 
-const CHIP =
-  "flex h-6.5 min-w-0 items-center gap-1.5 rounded-[7px] px-2 text-[12px] text-sidebar-muted-foreground transition-colors outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring data-popup-open:bg-sidebar-accent data-popup-open:text-sidebar-foreground";
+function HeaderButton({ className, ...props }: ComponentProps<typeof Button>) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className={cn(
+        "relative shrink-0 text-sidebar-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground data-popup-open:bg-sidebar-selected data-popup-open:text-sidebar-foreground",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
 
 const ALL = "all";
 
-/** Which project the lists show, the projects' own actions, and the other filters. */
-function FilterBar({
+/** Narrows the lists, and the board, to one project, or to what needs the person. */
+function FilterMenu({
   projects: projectList,
-  projectId,
-  openId,
-  children,
+  filter,
+  waiting,
+  triggerRef,
 }: {
   projects: Project[];
-  projectId: string | undefined;
-  openId: string | undefined;
-  children: ReactNode;
+  filter: ListFilter;
+  /** How many threads need the person, in the project shown. */
+  waiting: number;
+  triggerRef: RefObject<HTMLButtonElement | null>;
 }) {
-  const [removing, setRemoving] = useState<Project>();
-  const project = projectList.find((entry) => entry.id === projectId);
-
+  const on = filter.projectId !== undefined || filter.needsYou;
   return (
-    <div className="flex items-center justify-between gap-1 pt-3 pb-1">
-      <DropdownMenu>
+    <DropdownMenu>
+      <Tip label={on ? "Filter (on)" : "Filter"}>
         <DropdownMenuTrigger
           render={
-            <button
-              type="button"
-              aria-label={`Showing ${project?.name ?? "all projects"}`}
-              className={CHIP}
+            <HeaderButton
+              ref={triggerRef}
+              aria-label={on ? "Filter, on" : "Filter"}
+              className={cn(on && "text-sidebar-foreground")}
             />
           }
         >
-          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.8} className="size-3.5 shrink-0" />
-          <span className="truncate">{project?.name ?? "All projects"}</span>
-          <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} className="size-3 shrink-0" />
+          <HugeiconsIcon icon={FilterIcon} strokeWidth={1.8} />
+          {on && (
+            <span
+              aria-hidden
+              className="absolute top-1 right-1 size-1.75 rounded-full bg-sidebar-primary ring-2 ring-sidebar"
+            />
+          )}
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-52">
+      </Tip>
+      <DropdownMenuContent align="end" className="min-w-56">
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Project</DropdownMenuLabel>
           <DropdownMenuRadioGroup
-            value={projectId ?? ALL}
+            value={filter.projectId ?? ALL}
             onValueChange={(value: string) =>
               setListFilter({ projectId: value === ALL ? undefined : value })
             }
@@ -239,31 +287,118 @@ function FilterBar({
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onClick={() =>
-              void addProject().then((added) => added && setListFilter({ projectId: added.id }))
-            }
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Show only</DropdownMenuLabel>
+          <DropdownMenuCheckboxItem
+            checked={filter.needsYou}
+            onCheckedChange={(checked) => setListFilter({ needsYou: checked })}
           >
-            <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.8} />
-            Add a project…
-          </DropdownMenuItem>
-          {project && (
-            <>
-              <DropdownMenuItem onClick={() => openInEditor(project.id)}>
-                <HugeiconsIcon icon={VisualStudioCodeIcon} strokeWidth={1.8} />
-                Open {project.name} in VS Code
-              </DropdownMenuItem>
-              <DropdownMenuItem variant="destructive" onClick={() => setRemoving(project)}>
-                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.8} />
-                Remove {project.name}…
-              </DropdownMenuItem>
-            </>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      {children}
+            Needs you
+            {waiting > 0 && <WaitingCount count={waiting} className="ml-auto" />}
+          </DropdownMenuCheckboxItem>
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
+function WaitingCount({ count, className }: { count: number; className?: string }) {
+  return (
+    <span
+      className={cn(
+        "rounded-full bg-amber-500 px-1.25 text-[10.5px] leading-4 font-semibold text-white tabular-nums",
+        className,
+      )}
+    >
+      {count}
+    </span>
+  );
+}
+
+/**
+ * The filters on, each a chip with its own way off, so the lists never hide threads without
+ * saying so. The project's chip also holds what can be done to the project.
+ */
+function ActiveFilters({
+  project,
+  needsYou: onlyNeedsYou,
+  openId,
+  onCleared,
+}: {
+  project: Project | undefined;
+  needsYou: boolean;
+  openId: string | undefined;
+  onCleared: () => void;
+}) {
+  const [removing, setRemoving] = useState<Project>();
+  const clear = (change: Partial<ListFilter>) => {
+    setListFilter(change);
+    onCleared();
+  };
+
+  return (
+    <>
+      {(project || onlyNeedsYou) && (
+        <div className="flex flex-wrap gap-1 pt-1.5">
+          {project && (
+            <FilterChip
+              clear={`Show all projects, not only ${project.name}`}
+              onClear={() => clear({ projectId: undefined })}
+            >
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <button
+                      type="button"
+                      aria-label={`${project.name}: the project shown`}
+                      title={project.path}
+                      className="flex h-full min-w-0 items-center gap-1 rounded-full pr-0.5 pl-2 outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                    />
+                  }
+                >
+                  <HugeiconsIcon
+                    icon={Folder01Icon}
+                    strokeWidth={1.8}
+                    className="size-3.5 shrink-0"
+                  />
+                  <span className="truncate">{project.name}</span>
+                  <HugeiconsIcon
+                    icon={ArrowDown01Icon}
+                    strokeWidth={2}
+                    className="size-3 shrink-0"
+                  />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="min-w-52">
+                  <DropdownMenuItem onClick={() => openInEditor(project.id)}>
+                    <HugeiconsIcon icon={VisualStudioCodeIcon} strokeWidth={1.8} />
+                    Open in VS Code
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="destructive" onClick={() => setRemoving(project)}>
+                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.8} />
+                    Remove {project.name}…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </FilterChip>
+          )}
+          {onlyNeedsYou && (
+            <FilterChip
+              clear="Show every thread, not only those that need you"
+              onClear={() => clear({ needsYou: false })}
+            >
+              <span className="flex items-center gap-1.5 pl-2">
+                <span aria-hidden className="size-2 rounded-full bg-amber-500" />
+                Needs you
+              </span>
+            </FilterChip>
+          )}
+        </div>
+      )}
+
+      {/* Outside the chips, so it stays to close once the filter it came from is gone. */}
       <Confirm
         open={removing !== undefined}
         onOpenChange={(open) => !open && setRemoving(undefined)}
@@ -279,63 +414,107 @@ function FilterBar({
       >
         Its threads and tasks are deleted from dodocode. The folder and its files stay as they are.
       </Confirm>
-    </div>
+    </>
+  );
+}
+
+function FilterChip({
+  clear,
+  onClear,
+  children,
+}: {
+  /** What clearing it does, for its button. */
+  clear: string;
+  onClear: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <span className="flex h-6 max-w-full min-w-0 items-center rounded-full bg-sidebar-selected text-[12px] text-sidebar-foreground shadow-xs ring-1 ring-sidebar-border">
+      {children}
+      <Tip label={clear}>
+        <button
+          type="button"
+          aria-label={clear}
+          onClick={onClear}
+          className="mr-0.5 grid size-5 shrink-0 place-items-center rounded-full text-sidebar-muted-foreground outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+        >
+          <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-3" />
+        </button>
+      </Tip>
+    </span>
   );
 }
 
 function EmptyList({ text }: { text: string }) {
-  return <p className="px-2 py-1.5 text-[12.5px] text-sidebar-muted-foreground">{text}</p>;
+  return <p className="px-2 pt-3 pb-1.5 text-[12.5px] text-sidebar-muted-foreground">{text}</p>;
 }
 
-function Group({
-  group,
-  collapsed,
-  onToggle,
-  expanded,
-  onExpand,
-  openId,
-  now,
-  projectName,
-}: {
+/** Tasks, or chats: a heading that names the kind, with nothing to click. */
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section aria-label={title} className="flex flex-col gap-px pt-4">
+      <h2 className="px-2 pb-1 text-[11px] font-semibold tracking-[0.06em] text-sidebar-muted-foreground uppercase">
+        {title}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+interface GroupRowsProps {
   group: SidebarGroup;
   collapsed: boolean;
-  onToggle: () => void;
   expanded: boolean;
   onExpand: (on: boolean) => void;
   openId: string | undefined;
   now: number;
   projectName: (thread: Thread) => string | undefined;
-}) {
-  const label = GROUP_LABEL[group.id];
-  // A folded group still shows the open thread, so the list never loses where you are.
-  const rows = collapsed ? group.rows.filter((row) => row.thread.id === openId) : group.rows;
+}
 
+/** A stage of the tasks, which folds shut from its heading. */
+function Group({ onToggle, ...props }: GroupRowsProps & { onToggle: () => void }) {
+  const { group, collapsed } = props;
+  const label = GROUP_LABEL[group.id];
   return (
-    <section aria-label={label} className="flex flex-col gap-px pb-1.5">
+    <section aria-label={label} className="flex flex-col gap-px pb-1">
       <button
         type="button"
         aria-expanded={!collapsed}
         onClick={onToggle}
         className="group/heading flex h-7 w-full items-center gap-2 rounded-[7px] px-2 text-left text-[12px] text-sidebar-muted-foreground transition-colors outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
       >
-        <span className="relative grid size-3.75 shrink-0 place-items-center">
-          <StatusGlyph
-            status={group.id}
-            className="transition-opacity group-hover/heading:opacity-0"
-          />
-          <HugeiconsIcon
-            icon={ArrowRight01Icon}
-            strokeWidth={2}
-            className={cn(
-              "absolute size-3.5 opacity-0 transition group-hover/heading:opacity-100",
-              !collapsed && "rotate-90",
-            )}
-          />
-        </span>
+        <StatusGlyph status={group.id} />
         <span className="font-medium">{label}</span>
         <span className="tabular-nums">{group.total}</span>
+        {/* Always shown, so a heading that folds never looks like one that starts something. */}
+        <HugeiconsIcon
+          icon={ArrowDown01Icon}
+          strokeWidth={2}
+          aria-hidden
+          className={cn(
+            "ml-auto size-3.5 opacity-60 transition group-hover/heading:opacity-100",
+            collapsed && "-rotate-90",
+          )}
+        />
       </button>
+      <GroupRows {...props} />
+    </section>
+  );
+}
 
+function GroupRows({
+  group,
+  collapsed,
+  expanded,
+  onExpand,
+  openId,
+  now,
+  projectName,
+}: GroupRowsProps) {
+  // A folded group still shows the open thread, so the list never loses where you are.
+  const rows = collapsed ? group.rows.filter((row) => row.thread.id === openId) : group.rows;
+  return (
+    <>
       {rows.map(({ thread, nested }) => (
         <ThreadRow
           key={thread.id}
@@ -352,7 +531,7 @@ function Group({
       {!collapsed && expanded && group.total > LIST_LIMIT && (
         <MoreButton onClick={() => onExpand(false)}>Show fewer</MoreButton>
       )}
-    </section>
+    </>
   );
 }
 
@@ -510,6 +689,13 @@ function ThreadRow({
         }}
       >
         Its messages and the threads of its subagents go too. This can't be undone.
+        {thread.worktree && thread.worktree.mergedAt === undefined && (
+          <>
+            {" "}
+            Its worktree goes as well. What it changed stays, committed on the branch{" "}
+            <span className="font-mono text-foreground">{thread.worktree.branch}</span>.
+          </>
+        )}
       </Confirm>
     </div>
   );

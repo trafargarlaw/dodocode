@@ -6,7 +6,9 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 
 import {
+  createSdkMcpServer,
   query as startQuery,
+  tool as sdkTool,
   type CanUseTool,
   type ModelInfo,
   type Options,
@@ -19,8 +21,9 @@ import {
 import type { ModelOption, ProviderInfo, Question, ThreadSettings } from "@dodocode/protocol";
 
 import { AsyncQueue, errorText, log, newId, within } from "../util";
+import { MOVE_TASK, MOVE_TASK_DESCRIPTION, moveTask, moveTaskInput } from "./app-tools";
 import { Transcript, type TranscriptHooks } from "./claude-transcript";
-import { changesForInput, describeTool, relativePath } from "./claude-tools";
+import { APP_SERVER, APP_TOOLS, changesForInput, describeTool, relativePath } from "./claude-tools";
 import { agentEnv, findOnPath, HOME_BIN } from "./env";
 import type { Provider, ProviderSession, SessionHost, SubagentWriter, TurnMessage } from "./types";
 
@@ -64,6 +67,25 @@ function modelOption(info: ModelInfo): ModelOption {
     efforts,
     defaultEffort: efforts.includes("high") ? "high" : efforts.at(-1),
   };
+}
+
+/** dodocode's own tools, on a new server for each process: one serves a single connection. */
+function appServer(host: SessionHost) {
+  return createSdkMcpServer({
+    name: APP_SERVER,
+    tools: [
+      sdkTool(
+        MOVE_TASK,
+        MOVE_TASK_DESCRIPTION,
+        moveTaskInput,
+        async (args) => {
+          const answer = moveTask(host, args);
+          return { content: [{ type: "text", text: answer.text }], isError: !answer.ok };
+        },
+        { alwaysLoad: true },
+      ),
+    ],
+  });
 }
 
 function permissionMode(settings: ThreadSettings): Options["permissionMode"] {
@@ -265,7 +287,8 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
       thinking: { type: "adaptive", display: "summarized" },
       systemPrompt: { type: "preset", preset: "claude_code" },
       env: agentEnv(),
-      ...(this.allowedRules.size > 0 ? { allowedTools: [...this.allowedRules] } : {}),
+      mcpServers: { [APP_SERVER]: appServer(this.host) },
+      allowedTools: [...APP_TOOLS, ...this.allowedRules],
       ...(resume ? { resume } : {}),
       ...(this.executable ? { pathToClaudeCodeExecutable: this.executable } : {}),
       stderr: (data) => {

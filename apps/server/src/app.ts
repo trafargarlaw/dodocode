@@ -1,10 +1,11 @@
 // The server's state and the methods clients call. Transport lives in main.ts.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, extname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import type { FSWatcher } from "node:fs";
+import { basename, extname, join } from "node:path";
 
-import { addedPrompt } from "@dodocode/protocol";
+import { addedPrompt, folderNameProblem } from "@dodocode/protocol";
 import type {
   Method,
   Params,
@@ -16,8 +17,27 @@ import type {
   Settings,
   Thread,
   ThreadSettings,
+  WorkspaceMode,
+  Worktree,
 } from "@dodocode/protocol";
 
+import {
+  addWorktree,
+  branchName,
+  branches,
+  changesIn,
+  cloneRepo,
+  commitAll,
+  countChanges,
+  deleteBranch,
+  hasChanges,
+  initRepo,
+  mergeBranch,
+  removeWorktree,
+  repoOf,
+  restoreWorktree,
+} from "./git";
+import { expandPath, listFolders } from "./folders";
 import { ClaudeProvider } from "./providers/claude";
 import { CodexProvider } from "./providers/codex";
 import type { Provider } from "./providers/types";
@@ -47,6 +67,7 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 const DEFAULT_SETTINGS: Settings = {
   defaults: { provider: "claude", model: "", effort: "", access: "full" },
   lastByProvider: {},
+  workspace: "worktree",
 };
 
 export class App implements ThreadContext {
@@ -55,6 +76,14 @@ export class App implements ThreadContext {
   private attachmentsDir: string;
   /** Where threads without a project work, each in a folder of its own. */
   private scratchDir: string;
+  /** Where worktrees go, a folder for each project. */
+  private worktreesDir: string;
+  /** Watches each project's git folder, to see when it checks out another branch. */
+  private gitWatchers = new Map<string, { gitDir: string; watcher: FSWatcher }>();
+  /** Worktrees being made, by thread, so two messages at once make one. */
+  private preparing = new Map<string, Promise<void>>();
+  /** Threads whose worktree is being merged. No turn starts until that's done. */
+  private merging = new Set<string>();
   private providers = new Map<ProviderId, Provider>();
   private providerInfo = new Map<ProviderId, ProviderInfo>();
   private projects = new Map<string, Project>();
@@ -68,6 +97,7 @@ export class App implements ThreadContext {
     this.attachmentsDir = join(dataDir, "attachments");
     mkdirSync(this.attachmentsDir, { recursive: true });
     this.scratchDir = join(dataDir, "scratch");
+    this.worktreesDir = join(dataDir, "worktrees");
     this.store = new Store(join(dataDir, "dodocode.db"));
     this.settings = { ...DEFAULT_SETTINGS, ...this.store.settings() };
     for (const provider of [new ClaudeProvider(), new CodexProvider()]) {
@@ -97,6 +127,7 @@ export class App implements ThreadContext {
       }
     }
     void this.refreshProviders();
+    for (const project of this.projects.values()) void this.refreshGit(project.id);
     log(
       "app",
       `data in ${this.dataDir}: ${this.projects.size} projects, ${this.threads.size} threads`,
@@ -104,6 +135,8 @@ export class App implements ThreadContext {
   }
 
   async dispose(): Promise<void> {
+    for (const { watcher } of this.gitWatchers.values()) watcher.close();
+    this.gitWatchers.clear();
     await Promise.all([...this.runtimes.values()].map((runtime) => runtime.dispose()));
     this.store.close();
   }
@@ -125,6 +158,7 @@ export class App implements ThreadContext {
     if (item?.type === "tool" && item.kind === "edit" && item.status === "done") {
       this.filesChanged(item.threadId);
     }
+    if (item?.type === "turn_end") void this.countWork(item.threadId);
   }
 
   /** A chat whose agent, or one of its subagents, changed files becomes a task. */
@@ -163,14 +197,10 @@ export class App implements ThreadContext {
   }
 
   workDir(thread: Thread): string {
-    if (thread.projectId) return this.projectPath(thread.projectId);
     // A subagent works where the thread that started it works.
-    let root = thread;
-    while (root.parentId) {
-      const parent = this.threads.get(root.parentId);
-      if (!parent) break;
-      root = parent;
-    }
+    const root = this.rootOf(thread);
+    if (root.worktree && root.worktree.mergedAt === undefined) return root.worktree.workDir;
+    if (root.projectId) return this.projectPath(root.projectId);
     const dir = join(this.scratchDir, root.id);
     mkdirSync(dir, { recursive: true });
     return dir;
@@ -187,6 +217,7 @@ export class App implements ThreadContext {
 
   settingsUsed(settings: ThreadSettings): void {
     this.settings = {
+      ...this.settings,
       defaults: settings,
       lastByProvider: {
         ...this.settings.lastByProvider,
@@ -199,10 +230,206 @@ export class App implements ThreadContext {
 
   // Helpers
 
-  private projectPath(projectId: string): string {
+  private project(projectId: string): Project {
     const project = this.projects.get(projectId);
     if (!project) throw new Error("The project is gone.");
-    return project.path;
+    return project;
+  }
+
+  private projectPath(projectId: string): string {
+    return this.project(projectId).path;
+  }
+
+  /** The main thread a thread belongs to: itself, or the one that started its subagent. */
+  private rootOf(thread: Thread): Thread {
+    let root = thread;
+    while (root.parentId) {
+      const parent = this.threads.get(root.parentId);
+      if (!parent) break;
+      root = parent;
+    }
+    return root;
+  }
+
+  /** Where tasks start, remembered from the choice made last. */
+  private workspaceUsed(workspace: WorkspaceMode): void {
+    if (this.settings.workspace === workspace) return;
+    this.settings = { ...this.settings, workspace };
+    this.store.saveSettings(this.settings);
+    this.emit({ type: "settings", settings: this.settings });
+  }
+
+  // Git
+
+  /** Reads what a project's folder has checked out, and watches it for a change. */
+  private async refreshGit(projectId: string): Promise<void> {
+    const project = this.projects.get(projectId);
+    if (!project) return;
+    let repo: Awaited<ReturnType<typeof repoOf>>;
+    try {
+      repo = await repoOf(project.path);
+    } catch (error) {
+      log("app", `could not read git in ${project.path}`, errorText(error));
+      return;
+    }
+    const current = this.projects.get(projectId);
+    if (!current) return;
+    this.watchGit(projectId, repo?.gitDir);
+    const git = repo ? (repo.branch ? { branch: repo.branch } : {}) : undefined;
+    if (JSON.stringify(git) === JSON.stringify(current.git)) return;
+    const { git: _old, ...rest } = current;
+    const next: Project = git ? { ...rest, git } : rest;
+    this.projects.set(projectId, next);
+    this.store.saveProject(next);
+    this.emitProjects();
+  }
+
+  private watchGit(projectId: string, gitDir: string | undefined): void {
+    const watching = this.gitWatchers.get(projectId);
+    if (watching?.gitDir === gitDir) return;
+    watching?.watcher.close();
+    this.gitWatchers.delete(projectId);
+    if (!gitDir) return;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      // Checking out a branch rewrites HEAD. Other files there change all the time.
+      const watcher = watch(gitDir, (_event, file) => {
+        if (file !== "HEAD") return;
+        clearTimeout(timer);
+        timer = setTimeout(() => void this.refreshGit(projectId), 150);
+      });
+      watcher.on("error", () => {
+        watcher.close();
+        if (this.gitWatchers.get(projectId)?.watcher === watcher)
+          this.gitWatchers.delete(projectId);
+      });
+      watcher.unref();
+      this.gitWatchers.set(projectId, { gitDir, watcher });
+    } catch (error) {
+      log("app", `could not watch ${gitDir}`, errorText(error));
+    }
+  }
+
+  private unwatchGit(projectId: string): void {
+    this.gitWatchers.get(projectId)?.watcher.close();
+    this.gitWatchers.delete(projectId);
+  }
+
+  /**
+   * Gets a thread's folder ready before a turn: makes its worktree before its first turn, when
+   * it works in one, and makes it again when its folder went missing.
+   */
+  private prepareWorkspace(threadId: string): Promise<void> {
+    const pending = this.preparing.get(threadId);
+    if (pending) return pending;
+    const work = this.makeWorkspace(threadId).finally(() => this.preparing.delete(threadId));
+    this.preparing.set(threadId, work);
+    return work;
+  }
+
+  private async makeWorkspace(threadId: string): Promise<void> {
+    const runtime = this.runtime(threadId);
+    const thread = runtime.thread;
+    if (thread.kind !== "main" || !thread.projectId || runtime.running) return;
+    const project = this.project(thread.projectId);
+    const worktree = thread.worktree;
+    if (worktree) {
+      if (worktree.mergedAt !== undefined || existsSync(worktree.path)) return;
+      try {
+        await restoreWorktree(project.path, worktree.path, worktree.branch);
+      } catch (error) {
+        throw new Error(
+          `Its worktree is gone, and could not be made again from ${worktree.branch}: ${errorText(error)}`,
+          { cause: error },
+        );
+      }
+      runtime.note(`Its worktree was gone, so it was made again from ${worktree.branch}.`);
+      return;
+    }
+    if (thread.startedAt !== undefined) return;
+    const mode = thread.workspace ?? (thread.task ? this.settings.workspace : "local");
+    if (mode !== "worktree") return;
+    const repo = await repoOf(project.path);
+    // A folder git doesn't know has no branch to work apart from: the agent works in it.
+    if (!repo) {
+      runtime.replace({ ...runtime.thread, workspace: "local" });
+      return;
+    }
+    if (!repo.head) {
+      throw new Error(
+        `${project.name} has no commits yet, so a worktree has nothing to start from. Commit something first, or work in the project's folder.`,
+      );
+    }
+    const parent = join(this.worktreesDir, `${basename(project.path)}-${project.id.slice(0, 8)}`);
+    const taken = await branches(project.path);
+    const branch = branchName(
+      thread.title,
+      (name) => taken.has(name) || existsSync(join(parent, name)),
+    );
+    const path = join(parent, branch);
+    mkdirSync(parent, { recursive: true });
+    await addWorktree(project.path, path, branch);
+    const made: Worktree = {
+      path,
+      workDir: repo.prefix ? join(path, repo.prefix) : path,
+      branch,
+      ...(repo.branch ? { base: repo.branch } : {}),
+      from: repo.head,
+    };
+    runtime.replace({ ...runtime.thread, workspace: "worktree", worktree: made });
+    const left = (await hasChanges(project.path).catch(() => false))
+      ? ` What isn't committed in ${project.name} is not in it.`
+      : "";
+    const from = repo.branch ?? `commit ${repo.head.slice(0, 7)}`;
+    runtime.note(
+      `Works in a worktree of its own, on the new branch ${branch} from ${from}.${left}`,
+    );
+  }
+
+  /** Counts what a thread's work changed in its worktree, after a turn. */
+  private async countWork(threadId: string): Promise<void> {
+    const thread = this.threads.get(threadId);
+    if (!thread) return;
+    const root = this.rootOf(thread);
+    const worktree = root.worktree;
+    if (!worktree || worktree.mergedAt !== undefined || !existsSync(worktree.path)) return;
+    let changed;
+    try {
+      changed = await countChanges(worktree.path, worktree.base);
+    } catch (error) {
+      log("app", "could not count a worktree's changes", errorText(error));
+      return;
+    }
+    const runtime = this.runtimes.get(root.id);
+    const current = runtime?.thread.worktree;
+    if (!runtime || current?.path !== worktree.path || current.mergedAt !== undefined) return;
+    if (JSON.stringify(current.changed) === JSON.stringify(changed)) return;
+    runtime.replace({ ...runtime.thread, worktree: { ...current, changed } });
+  }
+
+  /**
+   * Removes a worktree whose thread went. What the agent left in it is committed to its branch
+   * first, and the branch stays. When that commit fails, the worktree stays too.
+   */
+  private async dropWorktree(
+    projectPath: string,
+    worktree: Worktree,
+    title: string,
+    stopped: Promise<unknown>,
+  ): Promise<void> {
+    await stopped;
+    if (!existsSync(worktree.path)) return;
+    try {
+      await commitAll(worktree.path, `WIP: ${title}`);
+    } catch (error) {
+      log("app", `kept ${worktree.path}: its changes could not be committed`, errorText(error));
+      return;
+    }
+    try {
+      await removeWorktree(projectPath, worktree.path);
+    } catch (error) {
+      log("app", `could not remove ${worktree.path}`, errorText(error));
+    }
   }
 
   /** A main thread, not started, with its settings filled in. */
@@ -300,15 +527,23 @@ export class App implements ThreadContext {
         if (thread.parentId === ids[index]) ids.push(thread.id);
       }
     }
-    const scratch = this.threads.get(threadId)?.projectId ? undefined : threadId;
+    const root = this.threads.get(threadId);
+    const scratch = root?.projectId ? undefined : threadId;
+    const worktree =
+      root?.worktree && root.worktree.mergedAt === undefined ? root.worktree : undefined;
+    const projectPath = root?.projectId ? this.projects.get(root.projectId)?.path : undefined;
+    const stopped: Promise<void>[] = [];
     for (const id of ids) {
       const runtime = this.runtimes.get(id);
-      if (runtime) void runtime.dispose();
+      if (runtime) stopped.push(runtime.dispose());
       this.runtimes.delete(id);
       this.threads.delete(id);
       this.emit({ type: "thread.removed", threadId: id });
     }
     this.store.deleteThread(threadId);
+    if (root && worktree && projectPath) {
+      void this.dropWorktree(projectPath, worktree, root.title, Promise.allSettled(stopped));
+    }
     // The folder made for a thread without a project goes with it.
     if (scratch) {
       try {
@@ -317,6 +552,51 @@ export class App implements ThreadContext {
         log("app", "could not delete the folder of a thread", errorText(error));
       }
     }
+  }
+
+  /** Adds a folder as a project, or gives back the project it already is. */
+  private async addProject(full: string): Promise<Project> {
+    let isFolder = false;
+    try {
+      isFolder = statSync(full).isDirectory();
+    } catch {
+      // Missing, which the check below reports.
+    }
+    if (!isFolder) throw new Error(`${full} is not a folder.`);
+    const key = process.platform === "win32" ? full.toLowerCase() : full;
+    const existing = [...this.projects.values()].find(
+      (project) =>
+        (process.platform === "win32" ? project.path.toLowerCase() : project.path) === key,
+    );
+    if (existing) return existing;
+    const project: Project = {
+      id: newId(),
+      name: basename(full) || full,
+      path: full,
+      createdAt: Date.now(),
+    };
+    this.projects.set(project.id, project);
+    this.store.saveProject(project);
+    await this.refreshGit(project.id);
+    this.emitProjects();
+    return this.project(project.id);
+  }
+
+  /** Where a new project's folder goes: `name` in `parent`, which must be free. */
+  private newFolder(parent: string, name: string): string {
+    const problem = folderNameProblem(name);
+    if (problem) throw new Error(problem);
+    const where = expandPath(parent);
+    let isFolder = false;
+    try {
+      isFolder = statSync(where).isDirectory();
+    } catch {
+      // Missing, which the check below reports.
+    }
+    if (!isFolder) throw new Error(`There is no folder at ${where}.`);
+    const target = join(where, name.trim());
+    if (existsSync(target)) throw new Error(`There's already a ${name.trim()} in ${where}.`);
+    return target;
   }
 
   private openInEditor(path: string): void {
@@ -341,37 +621,40 @@ export class App implements ThreadContext {
       settings: this.settings,
     }),
 
-    "project.add": ({ path }) => {
-      const full = resolve(path);
-      let isFolder = false;
+    "project.add": ({ path }) => this.addProject(expandPath(path)),
+
+    "project.create": async ({ parent, name }) => {
+      const target = this.newFolder(parent, name);
+      mkdirSync(target);
       try {
-        isFolder = statSync(full).isDirectory();
-      } catch {
-        // Missing, which the check below reports.
+        await initRepo(target);
+      } catch (error) {
+        // An empty folder git could not start in goes again, so the name stays free.
+        rmSync(target, { recursive: true, force: true });
+        throw error;
       }
-      if (!isFolder) throw new Error(`${full} is not a folder.`);
-      const key = process.platform === "win32" ? full.toLowerCase() : full;
-      const existing = [...this.projects.values()].find(
-        (project) =>
-          (process.platform === "win32" ? project.path.toLowerCase() : project.path) === key,
-      );
-      if (existing) return existing;
-      const project: Project = {
-        id: newId(),
-        name: basename(full) || full,
-        path: full,
-        createdAt: Date.now(),
-      };
-      this.projects.set(project.id, project);
-      this.store.saveProject(project);
-      this.emitProjects();
-      return project;
+      return this.addProject(target);
     },
+
+    "project.clone": async ({ url, parent, name }) => {
+      if (!url.trim()) throw new Error("Give the address of a repository to clone.");
+      const target = this.newFolder(parent, name);
+      try {
+        await cloneRepo(url.trim(), target);
+      } catch (error) {
+        rmSync(target, { recursive: true, force: true });
+        throw new Error(`Could not clone ${url.trim()}: ${errorText(error)}`, { cause: error });
+      }
+      return this.addProject(target);
+    },
+
+    "folder.list": ({ path }) => listFolders(path),
 
     "project.remove": ({ projectId }) => {
       for (const thread of this.threads.values()) {
         if (thread.projectId === projectId && !thread.parentId) this.deleteThreadTree(thread.id);
       }
+      this.unwatchGit(projectId);
       this.projects.delete(projectId);
       this.store.deleteProject(projectId);
       this.emitProjects();
@@ -383,12 +666,26 @@ export class App implements ThreadContext {
       return null;
     },
 
-    "thread.create": async ({ projectId, settings, message }) => {
+    "thread.create": async ({ projectId, settings, message, workspace }) => {
       if (projectId) this.projectPath(projectId);
-      const thread = this.newThread(projectId, this.threadSettings(settings));
+      let thread = this.newThread(projectId, this.threadSettings(settings));
+      if (projectId && workspace) thread = { ...thread, workspace };
+      // Work sent off to a worktree is a task from the start.
+      if (projectId && workspace === "worktree" && message) {
+        thread = todoTask(thread, itemFrom(message), Date.now());
+      }
       const runtime = this.adoptThread(thread);
       this.settingsUsed(thread.settings);
-      if (message) await runtime.send(message);
+      if (message) {
+        try {
+          await this.prepareWorkspace(thread.id);
+        } catch (error) {
+          // Nothing started, so nothing stays: the person still has what they wrote.
+          this.deleteThreadTree(thread.id);
+          throw error;
+        }
+        await runtime.send(message);
+      }
       return runtime.thread;
     },
 
@@ -409,6 +706,10 @@ export class App implements ThreadContext {
     },
 
     "thread.send": async ({ threadId, message, mode }) => {
+      if (this.merging.has(threadId)) {
+        throw new Error("Its work is being merged. Send this once that's done.");
+      }
+      await this.prepareWorkspace(threadId);
       await this.runtime(threadId).send(message, mode);
       return null;
     },
@@ -418,22 +719,119 @@ export class App implements ThreadContext {
       return null;
     },
 
-    "thread.update": ({ threadId, title, settings, pinned, archived }) =>
-      this.runtime(threadId).update({ title, settings, pinned, archived }),
+    "thread.update": ({ threadId, title, settings, pinned, archived, workspace }) => {
+      const runtime = this.runtime(threadId);
+      if (workspace && workspace !== runtime.thread.workspace) {
+        if (runtime.thread.startedAt !== undefined || this.preparing.has(threadId)) {
+          throw new Error("It has started, so where it works is settled.");
+        }
+        if (!runtime.thread.projectId)
+          throw new Error("A thread without a project works on its own.");
+        runtime.replace({ ...runtime.thread, workspace });
+        if (runtime.thread.task) this.workspaceUsed(workspace);
+      }
+      return runtime.update({ title, settings, pinned, archived });
+    },
 
     "thread.delete": ({ threadId }) => {
       this.deleteThreadTree(threadId);
       return null;
     },
 
-    "task.create": ({ projectId, message, settings }) => {
+    "thread.openInEditor": ({ threadId }) => {
+      const thread = this.threads.get(threadId);
+      if (!thread) throw new Error("The thread is gone.");
+      this.openInEditor(this.workDir(thread));
+      return null;
+    },
+
+    "thread.changes": async ({ threadId }) => {
+      const thread = this.threads.get(threadId);
+      if (!thread) throw new Error("The thread is gone.");
+      const root = this.rootOf(thread);
+      const worktree = root.worktree;
+      if (worktree && worktree.mergedAt === undefined) {
+        if (!existsSync(worktree.path)) return { against: worktree.base, files: [] };
+        const changes = await changesIn(worktree.path, worktree.base ?? worktree.from);
+        return { ...(worktree.base ? { against: worktree.base } : {}), ...changes };
+      }
+      // A thread without a project works in a folder of its own, which no repository holds.
+      if (!root.projectId) return { files: [] };
+      const folder = this.projectPath(root.projectId);
+      if (!(await repoOf(folder))) return { files: [] };
+      return changesIn(folder, undefined);
+    },
+
+    "thread.merge": async ({ threadId }) => {
+      const runtime = this.runtime(threadId);
+      const thread = runtime.thread;
+      const worktree = thread.worktree;
+      if (!worktree || worktree.mergedAt !== undefined || !thread.projectId) {
+        throw new Error("This thread has no worktree to merge.");
+      }
+      const base = worktree.base;
+      if (!base) {
+        throw new Error(
+          "It started from a commit, not a branch, so there is no branch to merge into.",
+        );
+      }
+      if (runtime.running) {
+        throw new Error("The agent is still working. Wait for it to finish, or stop it first.");
+      }
+      const project = this.project(thread.projectId);
+      const repo = await repoOf(project.path);
+      if (repo?.branch !== base) {
+        const checkedOut = repo?.branch
+          ? `has ${repo.branch} checked out`
+          : "has no branch checked out";
+        throw new Error(`${project.name} ${checkedOut}. Check out ${base} there to merge into it.`);
+      }
+      if (this.merging.has(threadId)) throw new Error("It is being merged already.");
+      this.merging.add(threadId);
+      try {
+        if (existsSync(worktree.path)) await commitAll(worktree.path, thread.title);
+        const result = await mergeBranch(project.path, worktree.branch);
+        if (!result.merged) return { merged: false, base, conflicts: result.conflicts };
+        // The work is on the base branch now. What follows tidies up, and when it fails, the
+        // merge still stands.
+        // The agent's process works in the worktree, and Windows can't remove a folder a
+        // process is in. A later turn starts afresh, in the project's folder.
+        await runtime.forgetSession();
+        let left = "";
+        try {
+          if (existsSync(worktree.path)) await removeWorktree(project.path, worktree.path);
+          await deleteBranch(project.path, worktree.branch);
+        } catch (error) {
+          log("app", `could not tidy up after merging ${worktree.branch}`, errorText(error));
+          left = existsSync(worktree.path)
+            ? ` Its worktree at ${worktree.path} is still there, as something has it open. Remove it once that's closed.`
+            : ` The branch ${worktree.branch} is still there.`;
+        }
+        const now = Date.now();
+        let next: Thread = { ...runtime.thread, worktree: { ...worktree, mergedAt: now } };
+        if (next.task) next = moved(next, "done", now);
+        runtime.replace(next);
+        runtime.note(
+          left
+            ? `Merged ${worktree.branch} into ${base}.${left}`
+            : `Merged ${worktree.branch} into ${base}, and removed its worktree.`,
+        );
+      } finally {
+        this.merging.delete(threadId);
+      }
+      void this.refreshGit(project.id);
+      return { merged: true, thread: runtime.thread };
+    },
+
+    "task.create": ({ projectId, message, settings, workspace }) => {
       this.projectPath(projectId);
       const thread = todoTask(
         this.newThread(projectId, this.threadSettings(settings)),
         itemFrom(message),
         Date.now(),
       );
-      return this.adoptThread(thread).thread;
+      if (workspace) this.workspaceUsed(workspace);
+      return this.adoptThread(workspace ? { ...thread, workspace } : thread).thread;
     },
 
     "task.move": ({ threadId, status }) => {
@@ -466,7 +864,10 @@ export class App implements ThreadContext {
       const { thread, item } = split(runtime.thread, itemId, Date.now());
       runtime.replace(thread);
       const todo = todoTask(this.newThread(thread.projectId, thread.settings), item, Date.now());
-      return this.adoptThread(todo).thread;
+      // Split off a task nobody started, it keeps the choice made for where it works.
+      const kept =
+        thread.startedAt === undefined && thread.workspace ? { workspace: thread.workspace } : {};
+      return this.adoptThread({ ...todo, ...kept }).thread;
     },
 
     "queue.remove": ({ threadId, queueId }) => {

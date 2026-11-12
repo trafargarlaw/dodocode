@@ -9,6 +9,7 @@ import type {
   ProviderId,
   ProviderInfo,
   Question,
+  TaskStatus,
   ThreadSettings,
   TurnEndItem,
 } from "@dodocode/protocol";
@@ -62,6 +63,9 @@ export interface SubagentWriter extends ItemWriter {
   finish(status: "completed" | "failed" | "stopped", summary?: string): void;
 }
 
+/** The columns an agent can move its own task to. Only the person puts work in To do. */
+export type AgentMove = Exclude<TaskStatus, "todo">;
+
 /** What a thread gives its provider session. */
 export interface SessionHost {
   readonly threadId: string;
@@ -89,6 +93,11 @@ export interface SessionHost {
   openSubagent(options: { title: string; toolItemId: string }): SubagentWriter;
   upsertJob(job: BackgroundJob): void;
   notice(level: "info" | "warning" | "error", text: string): void;
+  /**
+   * Moves the thread's task on the board, because the person asked the agent to. Returns what
+   * to tell the agent, and throws when the thread can't go there.
+   */
+  moveTask(status: AgentMove): string;
 }
 
 export interface ProviderSession {

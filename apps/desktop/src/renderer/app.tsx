@@ -36,7 +36,7 @@ import { useTheme } from "@dodocode/ui/hooks/use-theme";
 import { cn } from "@dodocode/ui/lib/utils";
 import { HeldKeys, Keys, Tip, WALLPAPER_KEYS } from "./keys";
 import { BoardView } from "./board";
-import { SearchDialog } from "./search";
+import { openPalette, Palette } from "./palette/palette";
 import { threads } from "./server/app-data";
 import { useConnectionState } from "./server/connection";
 import { ShortcutsDialog } from "./shortcuts-dialog";
@@ -53,24 +53,8 @@ export function App() {
   const { theme } = useTheme();
   const [themeOpen, setThemeOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const newThreadRow = useRef<HTMLButtonElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const sidebar = useSidebar();
-
-  /** Opens a new thread, in the given project or else the one being looked at, ready to type. */
-  const newThread = (projectId?: string) => {
-    const view = getView();
-    const current =
-      view.kind === "thread"
-        ? (threads.get(view.threadId)?.projectId ?? null)
-        : view.kind === "draft"
-          ? view.projectId
-          : undefined;
-    openDraft(projectId ?? current);
-    // A draft already open keeps its composer, which the new view doesn't focus on its own.
-    requestAnimationFrame(() => composer.current?.focus());
-  };
 
   useHotkey(hotkeys["sidebar.toggle"], sidebar.toggle);
   useHotkey(hotkeys["theme.open"], () => setThemeOpen(true));
@@ -78,7 +62,7 @@ export function App() {
   useHotkey(hotkeys["appearance.toggle"], () =>
     setAppearance(theme.scheme === "dark" ? "light" : "dark"),
   );
-  useHotkey(hotkeys["search.open"], () => setSearchOpen(true));
+  useHotkey(hotkeys["search.open"], () => openPalette("search"));
   useHotkey(hotkeys["thread.new"], () => newThread());
   useHotkey(hotkeys["board.open"], openBoard);
 
@@ -89,7 +73,7 @@ export function App() {
         onToggleSidebar={sidebar.toggle}
         themeOpen={themeOpen}
         onThemeOpenChange={setThemeOpen}
-        onOpenSearch={() => setSearchOpen(true)}
+        onOpenSearch={() => openPalette("search")}
       />
       <ResizablePanelGroup
         orientation="horizontal"
@@ -106,7 +90,7 @@ export function App() {
           groupResizeBehavior="preserve-pixel-size"
           onResize={sidebar.onResize}
         >
-          <Sidebar newThread={newThreadRow} onNewThread={() => newThread()} />
+          <Sidebar onNewThread={() => newThread()} />
         </ResizablePanel>
         <ResizableHandle
           aria-label="Resize the sidebar"
@@ -126,9 +110,26 @@ export function App() {
         </ResizablePanel>
       </ResizablePanelGroup>
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
-      <SearchDialog open={searchOpen} onOpenChange={setSearchOpen} onNewThread={newThread} />
+      <Palette onNewThread={newThread} composer={composer} />
     </div>
   );
+}
+
+/**
+ * Opens a new thread, ready to type, in the given project. Without one, it asks which project,
+ * with the one being looked at picked already.
+ */
+function newThread(projectId?: string): void {
+  // Only the palette gives a project, and it hands focus to the composer as it closes.
+  if (projectId) return openDraft(projectId);
+  const view = getView();
+  const current =
+    view.kind === "thread"
+      ? (threads.get(view.threadId)?.projectId ?? null)
+      : view.kind === "draft"
+        ? view.projectId
+        : undefined;
+  openDraft(current, { chooseProject: true });
 }
 
 /** How far each arrow key moves the sidebar's edge. */

@@ -1,6 +1,11 @@
+// The palette's first page: search the threads and projects, and run the app's actions.
+
+import { useState } from "react";
 import { useAppHotkeys } from "@tanstack/react-hotkeys";
 import { useLiveQuery } from "@tanstack/react-db";
+import { Command as CommandPrimitive } from "cmdk";
 import {
+  ArrowRight01Icon,
   Folder01Icon,
   FolderAddIcon,
   KanbanIcon,
@@ -11,55 +16,40 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Command,
-  CommandDialog,
   CommandEmpty,
   CommandGroup,
-  CommandInput,
   CommandItem,
   CommandList,
   CommandShortcut,
 } from "@dodocode/ui/components/command";
-import { Keys } from "./keys";
-import { searchScore } from "./search-match";
-import { addProject, openInEditor, projects, threads } from "./server/app-data";
-import { ago, useNow } from "./time";
-import { GROUP_LABEL } from "./task-list";
-import { openBoard, openThread, useView } from "./view";
+import { Keys } from "../keys";
+import { searchScore } from "../search-match";
+import { openInEditor, projects, threads } from "../server/app-data";
+import { GROUP_LABEL } from "../task-list";
+import { ago, useNow } from "../time";
+import { openBoard, openThread, useView } from "../view";
+import { SOURCES } from "./add-project";
+import {
+  HEADER_INPUT,
+  KeyHint,
+  PALETTE_COMMAND,
+  PALETTE_LIST,
+  PaletteFooter,
+  PaletteHeader,
+} from "./chrome";
+import type { PaletteNav } from "./palette";
 
-/** Search the threads and projects, and run the app's actions, from the keyboard. */
-export function SearchDialog({
-  open,
-  onOpenChange,
+export function SearchPage({
+  nav,
   onNewThread,
 }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onNewThread: (projectId?: string) => void;
-}) {
-  return (
-    <CommandDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title="Search"
-      description="Search threads and projects, or run an action"
-      className="sm:max-w-xl"
-    >
-      {/* Mounted only while open, so its queries and its clock run only then. */}
-      {open && <SearchContent close={() => onOpenChange(false)} onNewThread={onNewThread} />}
-    </CommandDialog>
-  );
-}
-
-function SearchContent({
-  close,
-  onNewThread,
-}: {
-  close: () => void;
+  nav: PaletteNav;
   onNewThread: (projectId?: string) => void;
 }) {
   const hotkeys = useAppHotkeys();
   const view = useView();
   const now = useNow();
+  const [search, setSearch] = useState("");
   const { data: projectList = [] } = useLiveQuery({
     query: (q) => q.from({ project: projects }).orderBy(({ project }) => project.createdAt, "asc"),
   });
@@ -74,20 +64,34 @@ function SearchContent({
   const boardKeys = hotkeys["board.open"].hotkey;
 
   const run = (action: () => void) => () => {
-    close();
+    nav.close();
     action();
   };
 
   return (
-    <Command filter={(_value, search, keywords) => searchScore(keywords ?? [], search)} loop>
-      <CommandInput placeholder="Search threads and projects, or run an action" />
-      <CommandList className="max-h-[min(60vh,28rem)]">
+    <Command
+      filter={(_value, query, keywords) => searchScore(keywords ?? [], query)}
+      loop
+      className={PALETTE_COMMAND}
+    >
+      <PaletteHeader>
+        <CommandPrimitive.Input
+          data-palette-input
+          // oxlint-disable-next-line jsx-a11y/no-autofocus -- the palette is opened to type in it.
+          autoFocus
+          value={search}
+          onValueChange={setSearch}
+          placeholder="Search threads and projects, or run an action"
+          className={HEADER_INPUT}
+        />
+      </PaletteHeader>
+      <CommandList className={PALETTE_LIST}>
         <CommandEmpty>Nothing matches.</CommandEmpty>
         <CommandGroup heading="Actions">
           <CommandItem
             value="action:new-thread"
             keywords={["New thread", "start", "create"]}
-            onSelect={run(() => onNewThread(current?.projectId))}
+            onSelect={run(() => onNewThread())}
           >
             <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.8} />
             New thread
@@ -112,13 +116,15 @@ function SearchContent({
           </CommandItem>
           <CommandItem
             value="action:add-project"
-            keywords={["Add a project", "folder", "open"]}
-            onSelect={run(() => {
-              void addProject().then((project) => project && onNewThread(project.id));
-            })}
+            keywords={["Add a project", "new project", "folder", "open", "clone", "repository"]}
+            onSelect={() => nav.push({ kind: "sources" })}
           >
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.8} />
             Add a project
+            {/* Leads to more choices rather than doing it at once. */}
+            <CommandShortcut>
+              <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5" />
+            </CommandShortcut>
           </CommandItem>
           {currentProject && (
             <CommandItem
@@ -131,6 +137,23 @@ function SearchContent({
             </CommandItem>
           )}
         </CommandGroup>
+        {/* The ways to add a project, straight from a search, without a step through the list. */}
+        {search.trim() && (
+          <CommandGroup heading="Add a project">
+            {SOURCES.map((source) => (
+              <CommandItem
+                key={source.id}
+                value={`source:${source.id}`}
+                keywords={[source.title, source.description, ...source.keywords]}
+                onSelect={() => nav.push(source.page)}
+              >
+                <HugeiconsIcon icon={source.icon} strokeWidth={1.8} />
+                <span className="shrink-0">{source.title}</span>
+                <span className="min-w-0 truncate text-muted-foreground">{source.description}</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
         {threadList.length > 0 && (
           <CommandGroup heading="Threads">
             {threadList.map((thread) => {
@@ -182,6 +205,11 @@ function SearchContent({
           </CommandGroup>
         )}
       </CommandList>
+      <PaletteFooter>
+        <KeyHint keys={["ArrowUp", "ArrowDown"]}>Navigate</KeyHint>
+        <KeyHint keys={["Enter"]}>Open</KeyHint>
+        <KeyHint keys={["Escape"]}>Close</KeyHint>
+      </PaletteFooter>
     </Command>
   );
 }

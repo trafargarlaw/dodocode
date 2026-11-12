@@ -1,6 +1,14 @@
 // What the server and the window both work out about tasks.
 
-import type { TaskItem, Thread } from "./domain";
+import type { TaskItem, TaskStatus, Thread } from "./domain";
+
+/** The board's name for each column. */
+export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
+  todo: "To do",
+  progress: "In progress",
+  review: "In review",
+  done: "Done",
+};
 
 /** The words of a task item: all of it when there is more than the title. */
 export function itemText(item: TaskItem): string {

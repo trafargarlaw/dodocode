@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { useSyncExternalStore, type ReactElement } from "react";
 import {
   useFormatForDisplay,
   useHotkeyHint,
@@ -60,7 +60,10 @@ export function Tip({
  */
 export function HeldKeys({ hotkey, className }: { hotkey: AppHotkey; className?: string }) {
   const shown = useHotkeyHint(hotkey);
-  if (!shown || !hotkey.hotkey) return null;
+  // In a text field Ctrl is mostly for editing, to copy or paste, so the hints would only be in
+  // the way there.
+  const typing = useSyncExternalStore(onFocusChange, () => takesTyping(document.activeElement));
+  if (!shown || typing || !hotkey.hotkey) return null;
   return (
     <span
       aria-hidden
@@ -72,4 +75,39 @@ export function HeldKeys({ hotkey, className }: { hotkey: AppHotkey; className?:
       <Keys hotkey={hotkey.hotkey} className="bg-foreground text-background shadow-sm" />
     </span>
   );
+}
+
+function onFocusChange(listener: () => void): () => void {
+  document.addEventListener("focusin", listener);
+  document.addEventListener("focusout", listener);
+  return () => {
+    document.removeEventListener("focusin", listener);
+    document.removeEventListener("focusout", listener);
+  };
+}
+
+/** The input types that hold no text, so the keys pressed in them are not editing. */
+const NOT_TEXT = new Set([
+  "button",
+  "checkbox",
+  "color",
+  "file",
+  "hidden",
+  "image",
+  "radio",
+  "range",
+  "reset",
+  "submit",
+]);
+
+/** Whether an element is one that takes typing: a text field, or editable content. */
+export function takesTyping(element: Element | null): boolean {
+  if (!(element instanceof HTMLElement)) return false;
+  if (element.isContentEditable) return true;
+  if (element instanceof HTMLTextAreaElement) return !element.readOnly && !element.disabled;
+  if (element instanceof HTMLInputElement) {
+    return !element.readOnly && !element.disabled && !NOT_TEXT.has(element.type);
+  }
+  const role = element.getAttribute("role");
+  return role === "textbox" || role === "searchbox";
 }

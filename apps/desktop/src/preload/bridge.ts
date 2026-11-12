@@ -35,6 +35,9 @@ export interface DodocodeBridge {
   setWindowTheme(theme: WindowTheme): void;
   /** Resolves once the server listens, which can take a moment after a restart. */
   serverInfo(): Promise<ServerInfo>;
-  /** Shows the system's folder picker. Resolves to null when it is cancelled. */
-  pickFolder(): Promise<string | null>;
+  /**
+   * Shows the system's folder picker, open at `defaultPath` when given. Resolves to null when it
+   * is cancelled.
+   */
+  pickFolder(defaultPath?: string): Promise<string | null>;
 }

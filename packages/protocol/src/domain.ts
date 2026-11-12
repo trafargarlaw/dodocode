@@ -45,6 +45,46 @@ export interface Project {
   /** The folder the agents work in. */
   path: string;
   createdAt: number;
+  /** Set when the folder is in a git repository. The server keeps it current. */
+  git?: ProjectGit;
+}
+
+/** What git says about a project's folder. */
+export interface ProjectGit {
+  /** The branch the folder has checked out. Unset when none is (a detached HEAD). */
+  branch?: string;
+}
+
+/** Where a thread's agent works in its project. */
+export type WorkspaceMode =
+  /** In the project's folder, on whatever branch it has checked out. */
+  | "local"
+  /** In a worktree of its own, on a new branch, so the project's folder stays as it is. */
+  | "worktree";
+
+/** A worktree made for a thread: a checkout of its own, on a branch of its own. */
+export interface Worktree {
+  /** The worktree's folder. */
+  path: string;
+  /** Where in it the agent works: the project's folder, inside the checkout. */
+  workDir: string;
+  /** The branch made for the work. */
+  branch: string;
+  /** The branch it came from, which it merges back into. Unset when it came from a bare commit. */
+  base?: string;
+  /** The commit it came from. */
+  from: string;
+  /** What the work changed against `base`, counted when its last turn ended. */
+  changed?: ChangeCount;
+  /** Set once the branch was merged into `base` and the worktree removed. */
+  mergedAt?: number;
+}
+
+/** How much changed: files, and lines added and removed. */
+export interface ChangeCount {
+  files: number;
+  added: number;
+  removed: number;
 }
 
 export type ThreadStatus =
@@ -102,6 +142,13 @@ export interface Thread {
   task?: Task;
   /** Set once the person kept it a chat: it then never becomes a task by itself. */
   keepChat?: boolean;
+  /**
+   * Where the agent works, as chosen before its first turn. Unset: in the project's folder, or,
+   * for a task in To do, wherever tasks usually start.
+   */
+  workspace?: WorkspaceMode;
+  /** The worktree the agent works in, once one was made for it. */
+  worktree?: Worktree;
   /** Listed first in its group. */
   pinned?: boolean;
   /** Hidden from the lists. Search still finds it. */
@@ -289,4 +336,6 @@ export interface Settings {
   defaults: ThreadSettings;
   /** The model and effort last used with each provider, so switching back keeps them. */
   lastByProvider: Partial<Record<ProviderId, { model: string; effort: string }>>;
+  /** Where tasks start: the choice last made for one. Chats start in the project's folder. */
+  workspace: WorkspaceMode;
 }
