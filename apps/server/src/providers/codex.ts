@@ -4,8 +4,8 @@
 import type {
   FileChange,
   ModelOption,
-  ProviderInfo,
   Question,
+  SlashCommand,
   ThreadSettings,
 } from "@dodocode/protocol";
 
@@ -16,11 +16,17 @@ import {
   ADD_IDEA_SCHEMA,
   addIdea,
   addIdeaTitle,
+  APP_INSTRUCTIONS,
   MOVE_TASK,
   MOVE_TASK_DESCRIPTION,
   MOVE_TASK_SCHEMA,
   moveTask,
   moveTaskTitle,
+  SHOW_PAGE,
+  SHOW_PAGE_DESCRIPTION,
+  SHOW_PAGE_SCHEMA,
+  showPage,
+  type ToolAnswer,
 } from "./app-tools";
 import { relativePath } from "./claude-tools";
 import { CodexProcess, RpcError } from "./codex-rpc";
@@ -28,6 +34,7 @@ import { findOnPath } from "./env";
 import type {
   ItemWriter,
   Provider,
+  ProviderCheck,
   ProviderSession,
   SessionHost,
   SubagentWriter,
@@ -38,6 +45,19 @@ interface Route {
   notification(method: string, params: Record<string, unknown>): void;
   request(method: string, params: Record<string, unknown>): Promise<unknown>;
   exited(reason: string): void;
+}
+
+/**
+ * Codex's own slash commands belong to its terminal app. The app server can compact a thread,
+ * and dodocode runs that for `/compact`.
+ */
+const CODEX_COMMANDS: SlashCommand[] = [
+  { name: "compact", description: "Free up context by summarizing the conversation so far" },
+];
+
+/** Whether a message is `/compact`, which Codex runs as a compaction rather than a prompt. */
+export function isCompact(text: string): boolean {
+  return /^\/compact\s*$/i.test(text.trim());
 }
 
 interface CodexModel {
@@ -99,7 +119,7 @@ export class CodexProvider implements Provider {
     this.routes.delete(codexThreadId);
   }
 
-  async check(): Promise<ProviderInfo> {
+  async check(): Promise<ProviderCheck> {
     const base = { id: this.id, label: this.label, models: [] as ModelOption[] };
     if (!this.executable()) {
       return { ...base, status: "missing", message: "Codex is not installed." };
@@ -142,7 +162,7 @@ export class CodexProvider implements Provider {
           message: "Codex is not signed in. Run `codex login` in a terminal.",
         };
       }
-      return { ...base, status: "ready", version, models };
+      return { ...base, status: "ready", version, models, commands: CODEX_COMMANDS };
     } catch (error) {
       return { ...base, status: "error", message: errorText(error) };
     }
@@ -359,6 +379,8 @@ class ItemMapper {
         };
       }
       case "dynamicToolCall":
+        // A page shows as itself.
+        if (item.tool === SHOW_PAGE) return undefined;
         return {
           kind: "other" as const,
           name: String(item.tool ?? "tool"),
@@ -446,6 +468,11 @@ class CodexSession implements ProviderSession, Route {
     const turn = this.turn;
     const server = await this.provider.server();
     const threadId = await this.ensureThread();
+    if (isCompact(message.text) && message.images.length === 0) {
+      // The compaction runs as a turn of its own, whose events end this one.
+      await server.request("thread/compact/start", { threadId });
+      return;
+    }
     const settings = this.host.settings();
     const response = (await server.request("turn/start", {
       threadId,
@@ -522,6 +549,7 @@ class CodexSession implements ProviderSession, Route {
       cwd: this.host.cwd,
       model: settings.model || null,
       config: { "tools.update_plan.enabled": true },
+      developerInstructions: APP_INSTRUCTIONS,
     };
     const resumeId = this.host.resumeId;
     let threadId: string | undefined;
@@ -566,6 +594,12 @@ class CodexSession implements ProviderSession, Route {
             name: ADD_IDEA,
             description: ADD_IDEA_DESCRIPTION,
             inputSchema: ADD_IDEA_SCHEMA,
+          },
+          {
+            type: "function",
+            name: SHOW_PAGE,
+            description: SHOW_PAGE_DESCRIPTION,
+            inputSchema: SHOW_PAGE_SCHEMA,
           },
         ],
       })) as { thread: { id: string } };
@@ -640,12 +674,21 @@ class CodexSession implements ProviderSession, Route {
         });
         return;
       }
-      case "item/started":
-        this.itemStarted(mapper, params.item as CodexItem);
+      case "item/started": {
+        const item = params.item as CodexItem;
+        if (!child && item.type === "contextCompaction")
+          this.host.contextUsed({ compacting: true });
+        this.itemStarted(mapper, item);
         return;
-      case "item/completed":
-        mapper.completed(params.item as CodexItem);
+      }
+      case "item/completed": {
+        const item = params.item as CodexItem;
+        if (!child && item.type === "contextCompaction") {
+          this.host.contextUsed({ compacting: false });
+        }
+        mapper.completed(item);
         return;
+      }
       case "item/agentMessage/delta":
         mapper.appendText(params.itemId as string, params.delta as string);
         return;
@@ -666,13 +709,26 @@ class CodexSession implements ProviderSession, Route {
         if (child) return;
         const usage = params.tokenUsage as {
           total?: { inputTokens?: number; outputTokens?: number };
+          last?: { totalTokens?: number; reasoningOutputTokens?: number };
+          modelContextWindow?: number | null;
         };
         this.totals = {
           input: usage.total?.inputTokens ?? 0,
           output: usage.total?.outputTokens ?? 0,
         };
+        // The last request holds the whole conversation. Its reasoning is not carried on.
+        const used = (usage.last?.totalTokens ?? 0) - (usage.last?.reasoningOutputTokens ?? 0);
+        if (used > 0) {
+          this.host.contextUsed({
+            used,
+            ...(usage.modelContextWindow ? { window: usage.modelContextWindow } : {}),
+          });
+        }
         return;
       }
+      case "thread/compacted":
+        if (!child) this.host.contextUsed({ compacting: false });
+        return;
       case "error": {
         const error = params.error as { message?: string } | undefined;
         if (params.willRetry) {
@@ -873,12 +929,14 @@ class CodexSession implements ProviderSession, Route {
         };
       }
       case "item/tool/call": {
-        const answer =
+        const answer: ToolAnswer =
           params.tool === MOVE_TASK
             ? moveTask(this.host, params.arguments)
             : params.tool === ADD_IDEA
               ? addIdea(this.host, params.arguments)
-              : { ok: false, text: `dodocode has no tool named ${String(params.tool)}.` };
+              : params.tool === SHOW_PAGE
+                ? showPage(this.host, params.arguments)
+                : { ok: false, text: `dodocode has no tool named ${String(params.tool)}.` };
         return { contentItems: [{ type: "inputText", text: answer.text }], success: answer.ok };
       }
       default:

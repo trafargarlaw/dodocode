@@ -33,7 +33,7 @@ test("toBlocks groups thinking and tool calls in a row into one block, keyed by 
     },
     { ...base, id: "e1", type: "turn_end", status: "completed", durationMs: 10 },
   ];
-  const blocks = toBlocks(items).map((block) =>
+  const blocks = toBlocks(items, false).map((block) =>
     block.kind === "steps"
       ? [block.id, block.steps.map((step) => step.id)]
       : [block.id, block.kind],
@@ -44,6 +44,43 @@ test("toBlocks groups thinking and tool calls in a row into one block, keyed by 
     ["a1", "assistant"],
     ["t2", ["t2"]],
     ["e1", "turn_end"],
+  ]);
+});
+
+test("while the thread runs, the steps after its last message are not settled", () => {
+  const tool = (id: string): Item => ({
+    ...base,
+    id,
+    type: "tool",
+    kind: "command",
+    name: "Bash",
+    title: "ls",
+    input: {},
+    output: "",
+    status: "done",
+  });
+  const items: Item[] = [
+    { ...base, id: "u1", type: "user", text: "Fix it", images: [] },
+    tool("t1"),
+    { ...base, id: "a1", type: "assistant", text: "Looking.", streaming: false },
+    tool("t2"),
+    { ...base, id: "n1", type: "notice", level: "warning", text: "Slow network" },
+    tool("t3"),
+  ];
+  const settled = (running: boolean) =>
+    toBlocks(items, running).flatMap((block) =>
+      block.kind === "steps" ? [[block.id, block.settled]] : [],
+    );
+
+  expect(settled(true)).toEqual([
+    ["t1", true],
+    ["t2", false],
+    ["t3", false],
+  ]);
+  expect(settled(false)).toEqual([
+    ["t1", true],
+    ["t2", true],
+    ["t3", true],
   ]);
 });
 

@@ -8,6 +8,7 @@ import type {
   ToolItem,
   TurnEndItem,
   UserItem,
+  ViewItem,
 } from "@dodocode/protocol";
 
 export type Step = ReasoningItem | ToolItem;
@@ -16,24 +17,31 @@ export type Step = ReasoningItem | ToolItem;
 export type Block =
   | { kind: "user"; id: string; item: UserItem }
   | { kind: "assistant"; id: string; item: AssistantItem }
-  /** Thinking and tool calls in a row, shown as one trace. */
-  | { kind: "steps"; id: string; steps: Step[] }
+  /**
+   * Thinking and tool calls in a row, shown as one trace. It is settled once the agent has moved
+   * past it, and no more steps can join it.
+   */
+  | { kind: "steps"; id: string; steps: Step[]; settled: boolean }
   | { kind: "approval"; id: string; item: ApprovalItem }
   | { kind: "question"; id: string; item: QuestionItem }
   | { kind: "notice"; id: string; item: NoticeItem }
+  | { kind: "view"; id: string; item: ViewItem }
   | { kind: "turn_end"; id: string; item: TurnEndItem };
 
 /**
  * Groups items, in order, into blocks. Thinking and tool calls in a row form one block, keyed by
  * its first item, so the block keeps its place while steps join it.
+ *
+ * While the thread runs, the steps after its last message or end of turn are not settled: the
+ * agent is still at them, between one step and the next.
  */
-export function toBlocks(items: readonly Item[]): Block[] {
+export function toBlocks(items: readonly Item[], running: boolean): Block[] {
   const blocks: Block[] = [];
   for (const item of items) {
     if (item.type === "reasoning" || item.type === "tool") {
       const last = blocks.at(-1);
       if (last?.kind === "steps") last.steps.push(item);
-      else blocks.push({ kind: "steps", id: item.id, steps: [item] });
+      else blocks.push({ kind: "steps", id: item.id, steps: [item], settled: true });
       continue;
     }
     switch (item.type) {
@@ -52,9 +60,19 @@ export function toBlocks(items: readonly Item[]): Block[] {
       case "notice":
         blocks.push({ kind: "notice", id: item.id, item });
         break;
+      case "view":
+        blocks.push({ kind: "view", id: item.id, item });
+        break;
       case "turn_end":
         blocks.push({ kind: "turn_end", id: item.id, item });
         break;
+    }
+  }
+  if (running) {
+    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+      const block = blocks[index]!;
+      if (block.kind === "user" || block.kind === "assistant" || block.kind === "turn_end") break;
+      if (block.kind === "steps") block.settled = false;
     }
   }
   return blocks;

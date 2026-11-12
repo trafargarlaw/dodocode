@@ -1,14 +1,23 @@
 // Turns the messages of one Claude conversation, the main one or a subagent's, into items.
 
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { ImageRef } from "@dodocode/protocol";
 
+import {
+  changesForInput,
+  changesFromResult,
+  describeTool,
+  SHOW_PAGE_TOOL,
+  todosFrom,
+} from "./claude-tools";
 import type { ItemWriter } from "./types";
-import { changesForInput, changesFromResult, describeTool, todosFrom } from "./claude-tools";
 
 export interface TranscriptHooks {
   subagentStarted(toolId: string, title: string, parent: Transcript): void;
   subagentReturned(toolId: string, isError: boolean, background: boolean): void;
   toolDenied(toolId: string): boolean;
+  /** Keeps an image a tool gave back, base64 encoded. */
+  keepImage(data: string, mime: string): ImageRef | undefined;
 }
 
 interface Block {
@@ -21,12 +30,13 @@ interface Block {
   tool_use_id?: string;
   content?: unknown;
   is_error?: boolean;
+  source?: { type?: string; media_type?: string; data?: string };
 }
 
 type StreamKind = "text" | "thinking";
 
 /** Tools whose calls show as something else, or not at all. */
-const HIDDEN_TOOLS = new Set(["AskUserQuestion"]);
+const HIDDEN_TOOLS = new Set(["AskUserQuestion", SHOW_PAGE_TOOL]);
 
 export class Transcript {
   readonly writer: ItemWriter;
@@ -77,6 +87,19 @@ export class Transcript {
       .filter((block) => block.type === "text")
       .map((block) => block.text ?? "")
       .join("\n");
+  }
+
+  /** Keeps the images in a tool result, such as a screenshot or an image file the agent read. */
+  private imagesOf(content: unknown): ImageRef[] {
+    if (!Array.isArray(content)) return [];
+    const images: ImageRef[] = [];
+    for (const block of content as Block[]) {
+      const source = block.source;
+      if (block.type !== "image" || source?.type !== "base64" || !source.data) continue;
+      const image = this.hooks.keepImage(source.data, source.media_type ?? "image/png");
+      if (image) images.push(image);
+    }
+    return images;
   }
 
   /** Returns true when the message carried text from the agent. */
@@ -248,6 +271,7 @@ export class Transcript {
     const item = this.writer.get(id);
     if (!tool || item?.type !== "tool") return;
     const output = this.textOf(block.content);
+    const images = this.imagesOf(block.content);
     const isError = Boolean(block.is_error);
     const result = (structured ?? {}) as Record<string, unknown>;
     const launchedInBackground =
@@ -268,6 +292,7 @@ export class Transcript {
       background: background || undefined,
       endedAt: background ? undefined : Date.now(),
       exitCode: typeof result.exitCode === "number" ? result.exitCode : undefined,
+      images: images.length > 0 ? images : undefined,
       changes:
         item.kind === "edit" && !isError
           ? changesFromResult(tool.name, tool.input, structured, this.cwd)

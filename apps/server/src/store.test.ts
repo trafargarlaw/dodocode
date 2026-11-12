@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { Item, Thread } from "@dodocode/protocol";
-import { Store } from "./store";
+import { Store, type ResumePoints } from "./store";
 
 function thread(id: string, parentId?: string): Thread {
   return {
@@ -38,4 +38,18 @@ test("deleting a thread deletes its subagents' threads and theirs, with their it
 
   expect(store.threads().map((each) => each.id)).toEqual(["b"]);
   expect(store.items("s2")).toEqual([]);
+});
+
+test("a thread saved before costs were kept still resumes its sessions", () => {
+  const store = new Store(":memory:");
+  store.saveThread(thread("a"));
+  // As it was saved then: the session's id alone.
+  store.saveResumePoints("a", { claude: "s1" } as unknown as ResumePoints);
+  expect(store.resumePoints("a")).toEqual({ claude: { id: "s1" } });
+
+  store.saveResumePoints("a", { claude: { id: "s1", costUsd: 1.5 }, codex: { id: "c1" } });
+  expect(store.resumePoints("a")).toEqual({
+    claude: { id: "s1", costUsd: 1.5 },
+    codex: { id: "c1" },
+  });
 });

@@ -7,9 +7,11 @@ import type {
   ImageRef,
   Item,
   Project,
+  ProviderId,
   ProviderInfo,
   QueuedMessage,
   Settings,
+  SlashCommand,
   TaskStatus,
   Thread,
   ThreadSettings,
@@ -188,6 +190,15 @@ export interface Methods {
   /** Keeps an image for a message. The data is base64. */
   "attachment.upload": { params: { name: string; mime: string; data: string }; result: ImageRef };
 
+  /**
+   * The slash commands an agent takes in a project: its own, and the ones the project and the
+   * person added. Without a project, or before an agent ran in it, only its own.
+   */
+  "commands.list": {
+    params: { provider: ProviderId; projectId?: string };
+    result: SlashCommand[];
+  };
+
   "settings.update": { params: Partial<Settings>; result: Settings };
   "providers.refresh": { params: Record<string, never>; result: ProviderInfo[] };
 }
@@ -230,4 +241,17 @@ export type ServerFrame =
 /** Where the server serves an attachment's bytes, relative to its address. */
 export function attachmentPath(id: string): string {
   return `/attachments/${encodeURIComponent(id)}`;
+}
+
+/**
+ * Where the server serves a page the agent showed, relative to its address. It takes no token:
+ * the page runs scripts, which must never get one, and its id is too long to guess.
+ */
+export function viewPath(id: string): string {
+  return `/views/${encodeURIComponent(id)}/`;
+}
+
+/** Where the server serves an image file from its machine, relative to its address. */
+export function imageFilePath(path: string): string {
+  return `/files?path=${encodeURIComponent(path)}`;
 }

@@ -1,11 +1,18 @@
 // The tools dodocode gives every agent, whatever runs it: moving its own task on the person's
-// board, which it does only when the person asks it to, and writing down an idea in the board's
-// backlog.
+// board, which it does only when the person asks it to, writing down an idea it noticed in the
+// board's backlog, and showing a web page in the thread.
 
 import { TASK_STATUS_LABEL } from "@dodocode/protocol";
 import { z } from "zod";
 import { errorText } from "../util";
 import type { AgentMove, SessionHost } from "./types";
+
+/** What the agent is told about the app it works in, besides its tools' own descriptions. */
+export const APP_INSTRUCTIONS = [
+  "You work inside dodocode, a desktop app that shows this conversation to the person and renders your Markdown.",
+  "To show the person an image file, such as a screenshot you took, embed it with Markdown image syntax and its absolute path, e.g. ![The home page](/absolute/path/to/home.png); a bare path shows only as text.",
+  "To show a web page you made, such as a UI mock-up, a chart, a diagram or a prototype, call the show_page tool: it appears in the conversation, working.",
+].join(" ");
 
 export const MOVE_TASK = "move_task";
 
@@ -92,4 +99,40 @@ export function addIdea(host: SessionHost, args: unknown): ToolAnswer {
 export function addIdeaTitle(args: unknown): string {
   const title = addIdeaArgs.safeParse(args).data?.title.trim();
   return title ? `Add “${title}” to the backlog` : "Add an idea to the backlog";
+}
+
+export const SHOW_PAGE = "show_page";
+
+export const SHOW_PAGE_DESCRIPTION = [
+  "Shows a web page in the conversation, where the person sees it working: a UI mock-up, a chart, a diagram, a prototype.",
+  "Give a whole HTML document in html, or the path of an .html file in path.",
+  "A page from a file loads the files beside it, such as its CSS, scripts and images; a page from html loads only what it links to on the web.",
+  "Its scripts run, and it can load libraries from a CDN. It shows about 720 pixels wide, and the person can open it larger.",
+  "Show a page again after you change it.",
+].join(" ");
+
+export const showPageInput = {
+  title: z.string().describe("A short name for the page, shown above it."),
+  html: z.string().optional().describe("A whole HTML document. Leave it out to show a file."),
+  path: z
+    .string()
+    .optional()
+    .describe("An .html file to show, absolute or relative to where you work."),
+};
+
+const showPageArgs = z.object(showPageInput);
+
+export const SHOW_PAGE_SCHEMA = z.toJSONSchema(showPageArgs);
+
+/** Shows the page the agent asked for, with its arguments as they came. */
+export function showPage(host: SessionHost, args: unknown): ToolAnswer {
+  const parsed = showPageArgs.safeParse(args);
+  if (!parsed.success) {
+    return { ok: false, text: "Give a title, and either html or the path of an .html file." };
+  }
+  try {
+    return { ok: true, text: host.showPage(parsed.data) };
+  } catch (error) {
+    return { ok: false, text: errorText(error) };
+  }
 }

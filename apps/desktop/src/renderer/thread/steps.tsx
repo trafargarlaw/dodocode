@@ -34,9 +34,10 @@ import { duration } from "../time";
 import { openThread } from "../view";
 import type { Step } from "./blocks";
 import { changeCounts, Code, FileDiff, Output } from "./code";
+import { Images } from "./image-view";
 import { Markdown } from "./markdown";
 
-/** A finished run of more steps than this folds into one line. */
+/** A settled run of more steps than this folds into one line. */
 const FOLD_AT = 4;
 
 const TOOL_ICON: Record<ToolKind, typeof ZapIcon> = {
@@ -55,12 +56,27 @@ const TOOL_ICON: Record<ToolKind, typeof ZapIcon> = {
 /** Kinds whose title is a command or a path, which reads best in a monospace font. */
 const MONO_TITLE = new Set<ToolKind>(["command", "edit", "read", "search"]);
 
-function isRunning(step: Step): boolean {
-  return step.type === "reasoning" ? step.streaming : step.status === "running";
+/**
+ * The agent's thinking and tool calls between two messages. The images its tools gave back, such
+ * as screenshots, show under them, folded or not.
+ */
+export function StepsBlock({ steps, settled }: { steps: Step[]; settled: boolean }) {
+  const images = steps.flatMap((step) => (step.type === "tool" ? (step.images ?? []) : []));
+  const trace = <StepsTrace steps={steps} settled={settled} />;
+  if (images.length === 0) return trace;
+  return (
+    <div className="flex flex-col gap-2.5">
+      {trace}
+      <Images images={images} align="start" />
+    </div>
+  );
 }
 
-/** The agent's thinking and tool calls between two messages. */
-export function StepsBlock({ steps }: { steps: Step[] }) {
+/**
+ * A run the agent is still adding to stays open: folding it while no step runs would fold and
+ * unfold it between one step and the next.
+ */
+function StepsTrace({ steps, settled }: { steps: Step[]; settled: boolean }) {
   const list = (
     <Trace className="gap-1.5">
       {steps.map((step) =>
@@ -72,7 +88,7 @@ export function StepsBlock({ steps }: { steps: Step[] }) {
       )}
     </Trace>
   );
-  if (steps.length <= FOLD_AT || steps.some(isRunning)) return list;
+  if (!settled || steps.length <= FOLD_AT) return list;
 
   return (
     <TraceCollapsible>

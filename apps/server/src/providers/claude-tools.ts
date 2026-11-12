@@ -4,16 +4,20 @@ import { isAbsolute, relative } from "node:path";
 
 import type { FileChange, TodoEntry, ToolKind } from "@dodocode/protocol";
 
-import { ADD_IDEA, addIdeaTitle, MOVE_TASK, moveTaskTitle } from "./app-tools";
+import { ADD_IDEA, addIdeaTitle, MOVE_TASK, moveTaskTitle, SHOW_PAGE } from "./app-tools";
 
 /** The in-process server that gives Claude dodocode's own tools, as `mcp__dodocode__<tool>`. */
 export const APP_SERVER = "dodocode";
 
 const MOVE_TASK_TOOL = `mcp__${APP_SERVER}__${MOVE_TASK}`;
+
 const ADD_IDEA_TOOL = `mcp__${APP_SERVER}__${ADD_IDEA}`;
 
-/** The app's tools are always allowed: each one does what the person asked for in words. */
-export const APP_TOOLS = [MOVE_TASK_TOOL, ADD_IDEA_TOOL];
+/** Shows as the page it shows, not as a tool call. */
+export const SHOW_PAGE_TOOL = `mcp__${APP_SERVER}__${SHOW_PAGE}`;
+
+/** The app's tools are always allowed: none of them changes files or runs anything. */
+export const APP_TOOLS = [MOVE_TASK_TOOL, ADD_IDEA_TOOL, SHOW_PAGE_TOOL];
 
 export function relativePath(path: string, cwd: string): string {
   if (!path || !isAbsolute(path)) return path;

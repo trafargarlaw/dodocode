@@ -103,6 +103,7 @@ export function DraftView({
           </h1>
           <Composer
             draftKey={DRAFT_KEY}
+            projectId={project?.id}
             settings={settings}
             onSettingsChange={choose}
             running={false}

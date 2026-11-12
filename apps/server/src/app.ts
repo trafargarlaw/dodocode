@@ -3,10 +3,11 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import type { FSWatcher } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { addedPrompt, folderNameProblem } from "@dodocode/protocol";
 import type {
+  ImageRef,
   Method,
   Params,
   Project,
@@ -15,6 +16,7 @@ import type {
   Result,
   ServerEvent,
   Settings,
+  SlashCommand,
   Thread,
   ThreadSettings,
   WorkspaceMode,
@@ -40,11 +42,12 @@ import {
 import { expandPath, listFolders } from "./folders";
 import { ClaudeProvider } from "./providers/claude";
 import { CodexProvider } from "./providers/codex";
-import type { IdeaRequest, Provider } from "./providers/types";
+import type { IdeaRequest, PageRequest, Provider } from "./providers/types";
 import { Store } from "./store";
 import { itemFrom, merged, moved, promoted, split, todoTask } from "./tasks";
 import { ThreadRuntime, type ThreadContext } from "./thread";
 import { errorText, log, newId } from "./util";
+import { fileInFolder, imageType, pageFileType } from "./web-files";
 
 export interface Client {
   send(event: ServerEvent): void;
@@ -86,6 +89,10 @@ export class App implements ThreadContext {
   private merging = new Set<string>();
   private providers = new Map<ProviderId, Provider>();
   private providerInfo = new Map<ProviderId, ProviderInfo>();
+  /** Each provider's own slash commands. */
+  private providerCommands = new Map<ProviderId, SlashCommand[]>();
+  /** The slash commands an agent listed in a project, by provider and project. */
+  private projectCommands = new Map<string, SlashCommand[]>();
   private projects = new Map<string, Project>();
   private threads = new Map<string, Thread>();
   private runtimes = new Map<string, ThreadRuntime>();
@@ -226,6 +233,43 @@ export class App implements ThreadContext {
     };
     this.store.saveSettings(this.settings);
     this.emit({ type: "settings", settings: this.settings });
+  }
+
+  keepFile(data: Buffer, mime: string, name: string): ImageRef | undefined {
+    const extension = IMAGE_EXTENSIONS[mime];
+    if (!extension) return undefined;
+    const id = newId();
+    const path = join(this.attachmentsDir, `${id}${extension}`);
+    writeFileSync(path, data);
+    const ref = { id, name: name || `image${extension}`, mime };
+    this.store.saveAttachment({ ...ref, path });
+    return ref;
+  }
+
+  keepPage(page: PageRequest, cwd: string): string {
+    const id = newId();
+    let path: string;
+    if (page.path) {
+      path = resolve(cwd, page.path);
+      if (!/\.html?$/i.test(path)) throw new Error(`${path} is not an .html file.`);
+      if (!existsSync(path) || !statSync(path).isFile()) {
+        throw new Error(`There is no file at ${path}.`);
+      }
+    } else if (page.html?.trim()) {
+      // A folder of its own, so the page can load nothing beside it.
+      const folder = join(this.attachmentsDir, "pages", id);
+      mkdirSync(folder, { recursive: true });
+      path = join(folder, "index.html");
+      writeFileSync(path, page.html);
+    } else {
+      throw new Error("Give the page's html, or the path of an .html file.");
+    }
+    this.store.saveAttachment({ id, name: page.title, mime: "text/html", path });
+    return id;
+  }
+
+  commandsFound(thread: Thread, provider: ProviderId, commands: SlashCommand[]): void {
+    this.projectCommands.set(`${provider}:${thread.projectId ?? ""}`, commands);
   }
 
   addIdea(from: Thread, idea: IdeaRequest): Thread {
@@ -485,7 +529,9 @@ export class App implements ThreadContext {
       [...this.providers.values()].map(async (provider) => {
         let info: ProviderInfo;
         try {
-          info = await provider.check();
+          const { commands, ...checked } = await provider.check();
+          info = checked;
+          this.providerCommands.set(provider.id, commands ?? []);
         } catch (error) {
           info = {
             id: provider.id,
@@ -919,13 +965,8 @@ export class App implements ThreadContext {
     },
 
     "attachment.upload": ({ name, mime, data }) => {
-      const extension = IMAGE_EXTENSIONS[mime];
-      if (!extension) throw new Error("Only PNG, JPEG, GIF and WebP images can be attached.");
-      const id = newId();
-      const path = join(this.attachmentsDir, `${id}${extension}`);
-      writeFileSync(path, Buffer.from(data, "base64"));
-      const ref = { id, name: name || `image${extname(path)}`, mime };
-      this.store.saveAttachment({ ...ref, path });
+      const ref = this.keepFile(Buffer.from(data, "base64"), mime, name);
+      if (!ref) throw new Error("Only PNG, JPEG, GIF and WebP images can be attached.");
       return ref;
     },
 
@@ -937,11 +978,35 @@ export class App implements ThreadContext {
     },
 
     "providers.refresh": () => this.refreshProviders(),
+
+    "commands.list": ({ provider, projectId }) =>
+      this.projectCommands.get(`${provider}:${projectId ?? ""}`) ??
+      this.providerCommands.get(provider) ??
+      [],
   };
 
   /** Where an attachment's file is, for the HTTP server. */
   attachmentFile(id: string): { path: string; mime: string } | undefined {
     const attachment = this.store.attachment(id);
     return attachment ? { path: attachment.path, mime: attachment.mime } : undefined;
+  }
+
+  /**
+   * A file of a page the agent showed, for the HTTP server: the page itself when `path` is
+   * empty, else a file beside it that it loads.
+   */
+  pageFile(id: string, path: string): { path: string; mime: string; page: boolean } | undefined {
+    const attachment = this.store.attachment(id);
+    if (attachment?.mime !== "text/html") return undefined;
+    if (!path) return { path: attachment.path, mime: "text/html; charset=utf-8", page: true };
+    const file = fileInFolder(dirname(attachment.path), path);
+    const mime = file && pageFileType(file);
+    return file && mime ? { path: file, mime, page: false } : undefined;
+  }
+
+  /** An image file on this machine, for the HTTP server. Anything else is not served. */
+  imageFile(path: string): { path: string; mime: string } | undefined {
+    const mime = imageType(path);
+    return mime && isAbsolute(path) ? { path, mime } : undefined;
   }
 }

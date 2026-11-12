@@ -1,8 +1,10 @@
 import { Children, isValidElement, memo, type ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@dodocode/ui/lib/utils";
 import { Code } from "./code";
+import { LocalImage, LocalImageLink } from "./image-view";
+import { localImage } from "./local-files";
 
 const components: Components = {
   // A fenced block reaches `pre` with its `code` inside: show it as a code block.
@@ -24,16 +26,18 @@ const components: Components = {
       {children}
     </code>
   ),
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="font-medium text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
-    >
-      {children}
-    </a>
-  ),
+  a: ({ href, children }) => {
+    // A link to a screenshot the agent took previews it, and opens it in the window.
+    const image = href ? localImage(href) : undefined;
+    if (image) return <LocalImageLink path={image}>{children}</LocalImageLink>;
+    return <WebLink href={href}>{children}</WebLink>;
+  },
+  img: ({ src, alt }) => {
+    const image = typeof src === "string" ? localImage(src) : undefined;
+    if (image) return <LocalImage path={image} alt={alt ?? ""} />;
+    // Images from the web stay links: loading them would tell their server the thread is open.
+    return typeof src === "string" && src ? <WebLink href={src}>{alt || src}</WebLink> : null;
+  },
   p: ({ children }) => <p className="my-2.5 first:mt-0 last:mb-0">{children}</p>,
   ul: ({ children }) => (
     <ul className="my-2.5 list-disc space-y-1 pl-5 marker:text-muted-foreground">{children}</ul>
@@ -76,7 +80,25 @@ const components: Components = {
     ) : null,
 };
 
+function WebLink({ href, children }: { href: string | undefined; children: ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="font-medium text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+    >
+      {children}
+    </a>
+  );
+}
+
 const plugins = [remarkGfm];
+
+/** Keeps paths to image files on this machine, which the default drops as unsafe. */
+function urlTransform(url: string): string {
+  return localImage(url) ? url : defaultUrlTransform(url);
+}
 
 /** The agent's words, in Markdown. */
 export const Markdown = memo(function Markdown({
@@ -88,7 +110,7 @@ export const Markdown = memo(function Markdown({
 }) {
   return (
     <div className={cn("min-w-0 leading-relaxed wrap-break-word", className)}>
-      <ReactMarkdown remarkPlugins={plugins} components={components}>
+      <ReactMarkdown remarkPlugins={plugins} components={components} urlTransform={urlTransform}>
         {text}
       </ReactMarkdown>
     </div>

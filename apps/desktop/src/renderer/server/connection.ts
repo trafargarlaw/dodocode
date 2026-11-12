@@ -9,6 +9,8 @@
 import { useSyncExternalStore } from "react";
 import {
   attachmentPath,
+  imageFilePath,
+  viewPath,
   type Method,
   type Params,
   type Result,
@@ -112,6 +114,19 @@ class Connection {
     const info = this.info;
     if (!info) return "";
     return `${info.httpUrl}${attachmentPath(id)}?token=${encodeURIComponent(info.token)}`;
+  }
+
+  /** Where an image file on the server's machine loads from, as `attachmentUrl`. */
+  imageFileUrl(path: string): string {
+    const info = this.info;
+    if (!info) return "";
+    return `${info.httpUrl}${imageFilePath(path)}&token=${encodeURIComponent(info.token)}`;
+  }
+
+  /** Where a page the agent showed loads from. It takes no token: see `viewPath`. */
+  viewUrl(id: string): string {
+    const info = this.info;
+    return info ? `${info.httpUrl}${viewPath(id)}` : "";
   }
 
   private async connect(): Promise<void> {

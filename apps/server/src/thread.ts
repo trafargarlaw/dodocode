@@ -1,17 +1,21 @@
 // One thread while the server runs: its items, its turn, its queue, and the provider session that
 // does the work. Subagent threads use the same class, written to by their parent's session.
 
+import { resolve as resolvePath } from "node:path";
+
 import {
   TASK_STATUS_LABEL,
   type ApprovalDecision,
   type ApprovalItem,
   type BackgroundJob,
+  type ImageRef,
   type Item,
   type OutgoingMessage,
   type ProviderId,
   type Question,
   type QueuedMessage,
   type ServerEvent,
+  type SlashCommand,
   type Thread,
   type ThreadSettings,
   type ThreadStatus,
@@ -24,6 +28,7 @@ import type {
   ItemPatch,
   ItemWriter,
   NewItem,
+  PageRequest,
   Provider,
   ProviderSession,
   SessionHost,
@@ -32,7 +37,9 @@ import type {
   TurnMessage,
   TurnOutcome,
 } from "./providers/types";
-import type { Store } from "./store";
+import { endJob, savedJobs, startJob } from "./jobs";
+import { relativePath } from "./providers/claude-tools";
+import type { ResumePoints, Store } from "./store";
 import { moved, started } from "./tasks";
 import { errorText, log, newId, titleFrom, within } from "./util";
 
@@ -48,6 +55,12 @@ export interface ThreadContext {
   adoptThread(thread: Thread): ThreadRuntime;
   /** Remembers the model and effort last used with a provider. */
   settingsUsed(settings: ThreadSettings): void;
+  /** Keeps a file a tool gave back, as an attachment. */
+  keepFile(data: Buffer, mime: string, name: string): ImageRef | undefined;
+  /** Keeps a page the agent showed, and gives the id the server serves it by. */
+  keepPage(page: PageRequest, cwd: string): string;
+  /** Remembers the slash commands a provider's agent takes in the thread's project. */
+  commandsFound(thread: Thread, provider: ProviderId, commands: SlashCommand[]): void;
   /** Puts an idea the agent noticed in `from` in the backlog of its project, as a new task. */
   addIdea(from: Thread, idea: IdeaRequest): Thread;
 }
@@ -80,7 +93,7 @@ export class ThreadRuntime {
   private session: ProviderSession | undefined;
   private sessionProvider: ProviderId | undefined;
   private pending = new Map<string, Pending>();
-  private resume: Partial<Record<ProviderId, string>>;
+  private resume: ResumePoints;
   /** The subagent threads this thread's session writes into, by tool item. */
   private subagents = new Map<string, ThreadRuntime>();
 
@@ -91,8 +104,8 @@ export class ThreadRuntime {
     this.thread = thread;
     this.seq = ctx.store.lastSeq(thread.id);
     this.queue = ctx.store.queue(thread.id);
-    this.jobs = ctx.store.jobs(thread.id);
-    this.resume = ctx.store.resumeIds(thread.id);
+    this.jobs = savedJobs(ctx.store.jobs(thread.id));
+    this.resume = ctx.store.resumePoints(thread.id);
   }
 
   get running(): boolean {
@@ -240,7 +253,7 @@ export class ThreadRuntime {
   async forgetSession(): Promise<void> {
     await this.disposeSession();
     this.resume = {};
-    this.ctx.store.saveResumeIds(this.thread.id, {});
+    this.ctx.store.saveResumePoints(this.thread.id, {});
   }
 
   /** Marks what was left unfinished when the server last stopped. Runs once, at start. */
@@ -359,10 +372,13 @@ export class ThreadRuntime {
       });
     }
     this.turn = undefined;
+    // Compacting ends with the turn, however the agent ended it.
+    const { compacting: _, ...context } = this.thread.context ?? { used: 0, window: 0, at: 0 };
     this.thread = {
       ...this.thread,
       activityAt: Date.now(),
       error: status === "failed" ? (outcome.error ?? "The turn failed.") : undefined,
+      context: this.thread.context ? context : undefined,
     };
     this.flush();
     this.trimCache();
@@ -425,12 +441,21 @@ export class ThreadRuntime {
       cwd: this.ctx.workDir(this.thread),
       settings: () => runtime.thread.settings,
       get resumeId() {
-        return runtime.resume[providerId];
+        return runtime.resume[providerId]?.id;
       },
       saveResumeId: (id) => {
-        if (runtime.resume[providerId] === id) return;
-        runtime.resume = { ...runtime.resume, [providerId]: id };
-        runtime.ctx.store.saveResumeIds(runtime.thread.id, runtime.resume);
+        if (runtime.resume[providerId]?.id === id) return;
+        runtime.resume = { ...runtime.resume, [providerId]: { id } };
+        runtime.ctx.store.saveResumePoints(runtime.thread.id, runtime.resume);
+      },
+      get resumeCost() {
+        return runtime.resume[providerId]?.costUsd;
+      },
+      saveResumeCost: (costUsd) => {
+        const point = runtime.resume[providerId];
+        if (!point || point.costUsd === costUsd) return;
+        runtime.resume = { ...runtime.resume, [providerId]: { ...point, costUsd } };
+        runtime.ctx.store.saveResumePoints(runtime.thread.id, runtime.resume);
       },
       items: this.writer,
       agentTurnStarted: () => {
@@ -448,14 +473,46 @@ export class ThreadRuntime {
       requestApproval: (request, signal) => runtime.requestApproval(request, signal),
       requestAnswers: (questions, signal) => runtime.requestAnswers(questions, signal),
       openSubagent: (options) => runtime.openSubagent(options),
-      upsertJob: (job) => runtime.upsertJob(job),
+      jobStarted: (job) => runtime.setJobs(startJob(runtime.jobs, job)),
+      jobEnded: (id, end) => runtime.setJobs(endJob(runtime.jobs, id, end, Date.now())),
       notice: (level, text) => runtime.notice(level, text),
       moveTask: (status) => runtime.agentMoved(status),
       addIdea: (idea) => {
         const added = runtime.ctx.addIdea(runtime.thread, idea);
         return `Added “${added.title}” to the backlog on the person's board. They decide later whether it's worth doing.`;
       },
+      keepImage: (data, mime) => {
+        const extension = mime.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+        return runtime.ctx.keepFile(Buffer.from(data, "base64"), mime, `image.${extension}`);
+      },
+      showPage: (page) => {
+        const cwd = runtime.ctx.workDir(runtime.thread);
+        const viewId = runtime.ctx.keepPage(page, cwd);
+        // Shown from the folder the agent works in, when the page is in it.
+        const path = page.path && relativePath(resolvePath(cwd, page.path), cwd);
+        runtime.writer.add({ type: "view", title: page.title, viewId, path });
+        return "The page shows in the conversation now, where the person can open it in a browser too.";
+      },
+      contextUsed: (patch) => runtime.contextUsed(patch),
+      commandsFound: (commands) => runtime.ctx.commandsFound(runtime.thread, providerId, commands),
     };
+  }
+
+  private contextUsed(patch: Parameters<SessionHost["contextUsed"]>[0]): void {
+    const before = this.thread.context;
+    const next = { used: 0, window: 0, ...before, ...patch, at: Date.now() };
+    if (next.compacting === false) delete next.compacting;
+    if (
+      before &&
+      before.used === next.used &&
+      before.window === next.window &&
+      before.autoCompactAt === next.autoCompactAt &&
+      before.compacting === next.compacting
+    ) {
+      return;
+    }
+    this.thread = { ...this.thread, context: next };
+    this.saveThread();
   }
 
   /** The agent moves its task, as the person asked. The tool call shows in the thread. */
@@ -552,18 +609,9 @@ export class ThreadRuntime {
     };
   }
 
-  private upsertJob(job: BackgroundJob): void {
-    const index = this.jobs.findIndex((entry) => entry.id === job.id);
-    this.jobs =
-      index === -1
-        ? [...this.jobs, job]
-        : this.jobs.map((entry, i) => (i === index ? { ...entry, ...job } : entry));
-    // Keep the running ones and the last few that finished.
-    const finished = this.jobs.filter((entry) => entry.status !== "running");
-    if (finished.length > 20) {
-      const drop = new Set(finished.slice(0, finished.length - 20).map((entry) => entry.id));
-      this.jobs = this.jobs.filter((entry) => !drop.has(entry.id));
-    }
+  private setJobs(jobs: BackgroundJob[]): void {
+    if (jobs === this.jobs) return;
+    this.jobs = jobs;
     this.ctx.store.saveJobs(this.thread.id, this.jobs);
     this.ctx.emit({ type: "jobs", threadId: this.thread.id, jobs: this.jobs }, this.thread.id);
   }

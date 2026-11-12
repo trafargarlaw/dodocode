@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ImageRef, NoticeItem, TurnEndItem, UserItem } from "@dodocode/protocol";
+import type { NoticeItem, TurnEndItem, UserItem } from "@dodocode/protocol";
 import {
   Alert02Icon,
   AlertCircleIcon,
@@ -11,12 +11,14 @@ import { Bubble, BubbleContent } from "@dodocode/ui/components/bubble";
 import { Marker, MarkerContent, MarkerIcon } from "@dodocode/ui/components/marker";
 import { Message, MessageContent, MessageFooter } from "@dodocode/ui/components/message";
 import { cn } from "@dodocode/ui/lib/utils";
-import { server } from "../server/connection";
+import { Tip } from "../keys";
 import { duration } from "../time";
 import type { Block } from "./blocks";
 import { ApprovalCard, QuestionCard } from "./cards";
+import { Images } from "./image-view";
 import { Markdown } from "./markdown";
 import { compact, cost } from "./numbers";
+import { PageView } from "./page-view";
 import { StepsBlock } from "./steps";
 
 export function BlockView({ block }: { block: Block }) {
@@ -26,13 +28,15 @@ export function BlockView({ block }: { block: Block }) {
     case "assistant":
       return block.item.text ? <Markdown text={block.item.text} className="text-[13.5px]" /> : null;
     case "steps":
-      return <StepsBlock steps={block.steps} />;
+      return <StepsBlock steps={block.steps} settled={block.settled} />;
     case "approval":
       return <ApprovalCard item={block.item} />;
     case "question":
       return <QuestionCard item={block.item} />;
     case "notice":
       return <Notice item={block.item} />;
+    case "view":
+      return <PageView item={block.item} />;
     case "turn_end":
       return <TurnEnd item={block.item} />;
   }
@@ -56,29 +60,6 @@ function UserMessage({ item }: { item: UserItem }) {
         )}
       </MessageContent>
     </Message>
-  );
-}
-
-export function Images({ images, className }: { images: ImageRef[]; className?: string }) {
-  return (
-    <div className={cn("flex flex-wrap justify-end gap-2", className)}>
-      {images.map((image) => (
-        <a
-          key={image.id}
-          href={server.attachmentUrl(image.id)}
-          target="_blank"
-          rel="noreferrer"
-          className="overflow-hidden rounded-xl border outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-        >
-          <img
-            src={server.attachmentUrl(image.id)}
-            alt={image.name}
-            loading="lazy"
-            className="max-h-48 max-w-64 object-cover"
-          />
-        </a>
-      ))}
-    </div>
   );
 }
 
@@ -123,22 +104,48 @@ function TurnEnd({ item }: { item: TurnEndItem }) {
       : `Worked for ${duration(item.durationMs)}`,
   ];
   if (item.costUsd !== undefined && item.costUsd > 0) parts.push(cost(item.costUsd));
-  const tokens = (item.inputTokens ?? 0) + (item.outputTokens ?? 0);
-  if (tokens > 0) parts.push(`${compact(tokens)} tokens`);
+  const read = item.inputTokens ?? 0;
+  const written = item.outputTokens ?? 0;
+  const line = parts.join(" · ");
   return (
     <Marker variant="separator" className="text-xs">
-      <MarkerContent>{parts.join(" · ")}</MarkerContent>
+      <MarkerContent>
+        {read + written > 0 ? (
+          <Tip label={tokensRead(read, written)} side="top">
+            <span className="cursor-default">{line}</span>
+          </Tip>
+        ) : (
+          line
+        )}
+      </MarkerContent>
     </Marker>
   );
 }
 
+/**
+ * The tokens a turn went through. Each step reads the whole conversation again, so they add up
+ * to far more than the context holds, which the meter below the composer shows.
+ */
+function tokensRead(read: number, written: number): string {
+  return `Read ${compact(read)} tokens and wrote ${compact(written)} over its steps. Each step reads the conversation again, so this is not how full the context is.`;
+}
+
 /** Shown while the agent works and has nothing streaming to show. */
-export function Working({ since, waiting }: { since: number | undefined; waiting: boolean }) {
+export function Working({
+  since,
+  waiting,
+  label,
+}: {
+  since: number | undefined;
+  waiting: boolean;
+  /** What it is doing, when there is more to say than that it works. */
+  label?: string;
+}) {
   const now = useSecond();
   return (
     <div className="flex items-center gap-2 text-sm text-muted-foreground">
       <span className={cn(!waiting && "shimmer motion-reduce:shimmer-none")}>
-        {waiting ? "Waiting for you" : "Working"}
+        {waiting ? "Waiting for you" : (label ?? "Working")}
       </span>
       {since !== undefined && (
         <span className="tabular-nums text-muted-foreground/70">{elapsed(now - since)}</span>

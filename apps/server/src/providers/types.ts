@@ -4,16 +4,21 @@
 import type {
   ApprovalItem,
   BackgroundJob,
+  ContextUsage,
+  ImageRef,
   Item,
   ItemBase,
   ProviderId,
   ProviderInfo,
   Question,
+  SlashCommand,
   TaskStatus,
   ThreadSettings,
   TurnEndItem,
 } from "@dodocode/protocol";
 import type { ApprovalDecision } from "@dodocode/protocol";
+
+import type { JobEnd } from "../jobs";
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
@@ -76,6 +81,17 @@ export interface IdeaRequest {
   details?: string;
 }
 
+/** A web page the agent shows: HTML it wrote, or an HTML file on disk. */
+export interface PageRequest {
+  title: string;
+  html?: string;
+  /** Absolute, or relative to where the agent works. */
+  path?: string;
+}
+
+/** What changed in the context usage since it was last measured. */
+export type ContextPatch = Partial<Omit<ContextUsage, "at">>;
+
 /** What a thread gives its provider session. */
 export interface SessionHost {
   readonly threadId: string;
@@ -83,7 +99,11 @@ export interface SessionHost {
   /** The settings the thread has now. */
   settings(): ThreadSettings;
   readonly resumeId: string | undefined;
+  /** Keeps the session to pick up again. A different session forgets the cost of the last. */
   saveResumeId(id: string): void;
+  /** The running cost the session to pick up had reached, as last saved. */
+  readonly resumeCost: number | undefined;
+  saveResumeCost(costUsd: number): void;
   /** Writes into the thread's current turn. */
   readonly items: ItemWriter;
   /**
@@ -101,7 +121,10 @@ export interface SessionHost {
   ): Promise<Record<string, string[]> | null>;
   /** Opens a thread for a subagent the agent started from a tool call. */
   openSubagent(options: { title: string; toolItemId: string }): SubagentWriter;
-  upsertJob(job: BackgroundJob): void;
+  /** Work the agent sent to the background started, or changed. */
+  jobStarted(job: BackgroundJob): void;
+  /** Work ended. Only work that went to the background is a job. */
+  jobEnded(id: string, end: JobEnd): void;
   notice(level: "info" | "warning" | "error", text: string): void;
   /**
    * Moves the thread's task on the board, because the person asked the agent to. Returns what
@@ -110,6 +133,14 @@ export interface SessionHost {
   moveTask(status: AgentMove): string;
   /** Adds an idea to the backlog of the thread's project. Returns what to tell the agent. */
   addIdea(idea: IdeaRequest): string;
+  /** Keeps an image a tool gave back, base64 encoded, so the thread can show it. */
+  keepImage(data: string, mime: string): ImageRef | undefined;
+  /** Shows a web page in the thread. Returns what to tell the agent; throws when it can't. */
+  showPage(page: PageRequest): string;
+  /** How full the agent's context is now. */
+  contextUsed(patch: ContextPatch): void;
+  /** The slash commands the agent takes where it works, its own and the ones added there. */
+  commandsFound(commands: SlashCommand[]): void;
 }
 
 export interface ProviderSession {
@@ -123,10 +154,16 @@ export interface ProviderSession {
   dispose(): Promise<void>;
 }
 
+/** What checking a provider finds: whether it runs, its models, and its slash commands. */
+export interface ProviderCheck extends ProviderInfo {
+  /** Its agent's own slash commands, before any project adds its own. */
+  commands?: SlashCommand[];
+}
+
 export interface Provider {
   readonly id: ProviderId;
   readonly label: string;
-  /** Checks the provider can run, and lists its models. */
-  check(): Promise<ProviderInfo>;
+  /** Checks the provider can run, and lists its models and commands. */
+  check(): Promise<ProviderCheck>;
   createSession(host: SessionHost): ProviderSession;
 }

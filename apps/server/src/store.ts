@@ -52,7 +52,14 @@ export interface StoredAttachment extends ImageRef {
   path: string;
 }
 
-export type ResumeIds = Partial<Record<ProviderId, string>>;
+/** Where a provider's session picks up again. */
+export interface ResumePoint {
+  id: string;
+  /** The running cost the session had reached, which its SDK carries on from on resume. */
+  costUsd?: number;
+}
+
+export type ResumePoints = Partial<Record<ProviderId, ResumePoint>>;
 
 export class Store {
   private db: DatabaseSync;
@@ -148,15 +155,22 @@ export class Store {
     this.sql("delete from threads where id = ?").run(id);
   }
 
-  resumeIds(threadId: string): ResumeIds {
+  resumePoints(threadId: string): ResumePoints {
     const row = this.sql("select resume from threads where id = ?").get(threadId) as
       | { resume: string }
       | undefined;
-    return row ? (JSON.parse(row.resume) as ResumeIds) : {};
+    if (!row) return {};
+    const saved = JSON.parse(row.resume) as Record<string, ResumePoint | string>;
+    const points: Record<string, ResumePoint> = {};
+    // A thread saved before costs were kept holds only the session's id.
+    for (const [provider, point] of Object.entries(saved)) {
+      points[provider] = typeof point === "string" ? { id: point } : point;
+    }
+    return points as ResumePoints;
   }
 
-  saveResumeIds(threadId: string, ids: ResumeIds): void {
-    this.sql("update threads set resume = ? where id = ?").run(JSON.stringify(ids), threadId);
+  saveResumePoints(threadId: string, points: ResumePoints): void {
+    this.sql("update threads set resume = ? where id = ?").run(JSON.stringify(points), threadId);
   }
 
   queue(threadId: string): QueuedMessage[] {

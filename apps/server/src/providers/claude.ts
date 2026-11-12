@@ -17,8 +17,15 @@ import {
   type Query,
   type SDKMessage,
   type SDKUserMessage,
+  type SlashCommand as ClaudeCommand,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { ModelOption, ProviderInfo, Question, ThreadSettings } from "@dodocode/protocol";
+import type {
+  ImageRef,
+  ModelOption,
+  Question,
+  SlashCommand,
+  ThreadSettings,
+} from "@dodocode/protocol";
 
 import { AsyncQueue, errorText, log, newId, within } from "../util";
 import {
@@ -26,15 +33,27 @@ import {
   ADD_IDEA_DESCRIPTION,
   addIdea,
   addIdeaInput,
+  APP_INSTRUCTIONS,
   MOVE_TASK,
   MOVE_TASK_DESCRIPTION,
   moveTask,
   moveTaskInput,
+  SHOW_PAGE,
+  SHOW_PAGE_DESCRIPTION,
+  showPage,
+  showPageInput,
 } from "./app-tools";
 import { Transcript, type TranscriptHooks } from "./claude-transcript";
 import { APP_SERVER, APP_TOOLS, changesForInput, describeTool, relativePath } from "./claude-tools";
 import { agentEnv, findOnPath, HOME_BIN } from "./env";
-import type { Provider, ProviderSession, SessionHost, SubagentWriter, TurnMessage } from "./types";
+import type {
+  Provider,
+  ProviderCheck,
+  ProviderSession,
+  SessionHost,
+  SubagentWriter,
+  TurnMessage,
+} from "./types";
 
 /**
  * The SDK's bundled binary when the app is packaged. The SDK finds it inside app.asar, where it
@@ -103,8 +122,51 @@ function appServer(host: SessionHost) {
         },
         { alwaysLoad: true },
       ),
+      sdkTool(
+        SHOW_PAGE,
+        SHOW_PAGE_DESCRIPTION,
+        showPageInput,
+        async (args) => {
+          const answer = showPage(host, args);
+          return { content: [{ type: "text", text: answer.text }], isError: !answer.ok };
+        },
+        { alwaysLoad: true },
+      ),
     ],
   });
+}
+
+/**
+ * What the work since the last result cost, from the running total a result carries and the
+ * total before it. A smaller total is a new one, as after /clear. A crashed turn's result
+ * carries zero, which says nothing, so the total before it stays.
+ */
+export function costSince(total: number, before: number): { cost: number; total: number } {
+  if (total === 0) return { cost: 0, total: before };
+  if (total < before) return { cost: total, total };
+  return { cost: total - before, total };
+}
+
+/**
+ * Claude Code's slash commands as the composer offers them: without the ones it says need its
+ * terminal, the ones it removed or renamed, and its internal ones.
+ */
+export function slashCommands(
+  commands: ClaudeCommand[],
+  terminal: ReadonlySet<string> = new Set(),
+): SlashCommand[] {
+  return commands
+    .filter(
+      (command) =>
+        !terminal.has(command.name) &&
+        !command.name.startsWith("_") &&
+        !/^\(removed\)|^Renamed to /.test(command.description),
+    )
+    .map((command) => ({
+      name: command.name,
+      description: command.description,
+      ...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
+    }));
 }
 
 function permissionMode(settings: ThreadSettings): Options["permissionMode"] {
@@ -123,7 +185,7 @@ export class ClaudeProvider implements Provider {
   /** Unset while the SDK's own bundled executable works. */
   executable: string | undefined = process.env.DODOCODE_CLAUDE_PATH || unpackedBundledClaude();
 
-  async check(): Promise<ProviderInfo> {
+  async check(): Promise<ProviderCheck> {
     const base = { id: this.id, label: this.label, models: [] as ModelOption[] };
     try {
       const result = await this.probe(this.executable);
@@ -151,7 +213,7 @@ export class ClaudeProvider implements Provider {
 
   private async probe(
     executable: string | undefined,
-  ): Promise<{ models: ModelOption[]; version?: string }> {
+  ): Promise<{ models: ModelOption[]; commands: SlashCommand[] }> {
     const abort = new AbortController();
     const probe = startQuery({
       prompt: silentPrompt(abort.signal),
@@ -181,7 +243,7 @@ export class ClaudeProvider implements Provider {
         ),
       ]);
       const models = init.models.filter((model) => model.value !== "default").map(modelOption);
-      return { models };
+      return { models, commands: slashCommands(init.commands) };
     } finally {
       abort.abort();
       probe.close();
@@ -219,7 +281,11 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
   private allowedRules = new Set<string>();
   private allowedTools = new Set<string>();
   private deniedTools = new Set<string>();
+  /** The running cost the last result carried. */
   private lastCost = 0;
+  /** Slash commands that only work in Claude Code's own terminal. */
+  private terminalCommands = new Set<string>();
+  private compacting = false;
   private disposed = false;
   private host: SessionHost;
   private executable: string | undefined;
@@ -293,6 +359,8 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
     const settings = this.host.settings();
     const input = new AsyncQueue<SDKUserMessage>();
     const resume = this.host.resumeId;
+    // A resumed session's running cost goes on from what the earlier turns cost.
+    this.lastCost = resume ? (this.host.resumeCost ?? 0) : 0;
     const options: Options = {
       cwd: this.host.cwd,
       model: settings.model || undefined,
@@ -304,7 +372,7 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
       canUseTool: this.canUseTool,
       includePartialMessages: true,
       thinking: { type: "adaptive", display: "summarized" },
-      systemPrompt: { type: "preset", preset: "claude_code" },
+      systemPrompt: { type: "preset", preset: "claude_code", append: APP_INSTRUCTIONS },
       env: agentEnv(),
       mcpServers: { [APP_SERVER]: appServer(this.host) },
       allowedTools: [...APP_TOOLS, ...this.allowedRules],
@@ -323,6 +391,11 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
       mode: options.permissionMode,
     };
     void this.readLoop(this.query);
+    // The window's size, before the first reply says how much of it the conversation takes.
+    this.query.initializationResult().then(
+      () => this.refreshContext(),
+      () => {},
+    );
   }
 
   /** Applies settings that changed since the process started, without restarting it. */
@@ -419,14 +492,23 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
           return;
         }
         if (message.type !== "user") this.ensureTurn();
+        // What a slash command such as /context or /compact printed comes as a reply of its
+        // own, which no model wrote.
         if (message.type === "assistant" && message.message.model === "<synthetic>") {
           const text = this.root.textOf(message.message.content);
-          if (text) this.host.notice(message.error ? "error" : "info", text);
+          if (!text) return;
+          if (message.error) {
+            this.host.notice("error", text);
+          } else {
+            this.host.items.add({ type: "assistant", text, streaming: false });
+            if (this.turn) this.turn.sawText = true;
+          }
           return;
         }
         if (message.type === "assistant" && message.error) {
           this.host.notice("error", this.assistantError(message.error));
         }
+        if (message.type === "assistant") this.replyUsed(message);
         const sawText = this.root.handle(message);
         if (sawText && this.turn) this.turn.sawText = true;
         return;
@@ -459,15 +541,46 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
     switch (event.subtype) {
       case "init":
         if (typeof event.session_id === "string") this.host.saveResumeId(event.session_id);
+        if (Array.isArray(event.terminal_slash_commands)) {
+          this.terminalCommands = new Set(event.terminal_slash_commands as string[]);
+        }
+        void this.refreshCommands();
+        return;
+      case "commands_changed":
+        this.commandsFound(event.commands as ClaudeCommand[]);
+        return;
+      case "status":
+        if (event.status === "compacting") {
+          this.compacting = true;
+          this.host.contextUsed({ compacting: true });
+        } else if (this.compacting) {
+          this.compacting = false;
+          this.host.contextUsed({ compacting: false });
+        }
         return;
       case "compact_boundary": {
-        const meta = event.compact_metadata as { pre_tokens?: number } | undefined;
+        const meta = event.compact_metadata as
+          | { trigger?: string; pre_tokens?: number; post_tokens?: number }
+          | undefined;
+        const k = (tokens: number) => `${Math.round(tokens / 1000)}k`;
+        const how =
+          meta?.trigger === "auto"
+            ? "Compacted the conversation by itself"
+            : "Compacted the conversation";
         this.host.notice(
           "info",
-          meta?.pre_tokens
-            ? `Compacted the conversation (${Math.round(meta.pre_tokens / 1000)}k tokens before).`
-            : "Compacted the conversation.",
+          meta?.pre_tokens && meta.post_tokens
+            ? `${how}, from ${k(meta.pre_tokens)} to ${k(meta.post_tokens)} tokens.`
+            : meta?.pre_tokens
+              ? `${how} (${k(meta.pre_tokens)} tokens before).`
+              : `${how}.`,
         );
+        this.compacting = false;
+        this.host.contextUsed({
+          compacting: false,
+          ...(meta?.post_tokens ? { used: meta.post_tokens } : {}),
+        });
+        void this.refreshContext();
         return;
       }
       case "api_retry": {
@@ -506,12 +619,10 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
       (usage.cache_read_input_tokens ?? 0) +
       (usage.cache_creation_input_tokens ?? 0);
     turn.outputTokens += usage.output_tokens ?? 0;
-    const cost =
-      message.total_cost_usd >= this.lastCost
-        ? message.total_cost_usd - this.lastCost
-        : message.total_cost_usd;
-    this.lastCost = message.total_cost_usd;
-    turn.costUsd += cost;
+    const spent = costSince(message.total_cost_usd, this.lastCost);
+    this.lastCost = spent.total;
+    this.host.saveResumeCost(spent.total);
+    turn.costUsd += spent.cost;
 
     const aborted =
       message.terminal_reason === "aborted_streaming" ||
@@ -554,6 +665,8 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
       inputTokens: turn.inputTokens || undefined,
       outputTokens: turn.outputTokens || undefined,
     });
+    // A command such as /autocompact or /compact changes what the context holds or allows.
+    void this.refreshContext();
   }
 
   private endTurn(outcome: Parameters<SessionHost["turnEnded"]>[0]): void {
@@ -588,7 +701,7 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
         : /agent|teammate|workflow/.test(taskType)
           ? "subagent"
           : "other";
-    this.host.upsertJob({
+    this.host.jobStarted({
       id: taskId,
       kind,
       title: description || tool?.title || "Background task",
@@ -612,15 +725,7 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
     const toolId = (event.tool_use_id as string | undefined) ?? this.taskTools.get(taskId);
     const status = event.status as "completed" | "failed" | "stopped";
     const summary = (event.summary as string | undefined) || undefined;
-    this.host.upsertJob({
-      id: taskId,
-      kind: "other",
-      title: summary ?? "Background task",
-      status,
-      startedAt: Date.now(),
-      endedAt: Date.now(),
-      summary,
-    } as never);
+    this.host.jobEnded(taskId, { status, summary });
     if (!toolId) return;
     const writer = this.writerFor(toolId);
     const tool = writer?.get(toolId);
@@ -664,6 +769,70 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
 
   toolDenied(toolId: string): boolean {
     return this.deniedTools.has(toolId);
+  }
+
+  keepImage(data: string, mime: string): ImageRef | undefined {
+    return this.host.keepImage(data, mime);
+  }
+
+  // Context and commands
+
+  /** Measures how full the context is, as Claude Code counts it. */
+  private async refreshContext(): Promise<void> {
+    const query = this.query;
+    if (!query) return;
+    try {
+      const usage = await within(
+        query.getContextUsage({ detail: "summary" }).then(
+          (value) => value,
+          () => undefined,
+        ),
+        10_000,
+        undefined,
+      );
+      if (!usage || this.query !== query) return;
+      this.host.contextUsed({
+        used: usage.totalTokens,
+        window: usage.maxTokens,
+        autoCompactAt: usage.isAutoCompactEnabled ? usage.autoCompactThreshold : undefined,
+      });
+    } catch (error) {
+      log("claude", "could not read the context usage", errorText(error));
+    }
+  }
+
+  /** The tokens a reply from the model took up, which is what the context holds now. */
+  private replyUsed(message: Extract<SDKMessage, { type: "assistant" }>): void {
+    const usage = message.message.usage as unknown as Record<string, number | undefined> | null;
+    if (!usage) return;
+    const used =
+      (usage.input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0) +
+      (usage.cache_creation_input_tokens ?? 0) +
+      (usage.output_tokens ?? 0);
+    if (used > 0) this.host.contextUsed({ used });
+  }
+
+  private async refreshCommands(): Promise<void> {
+    const query = this.query;
+    if (!query) return;
+    try {
+      const commands = await within(
+        query.supportedCommands().then(
+          (value) => value,
+          () => undefined,
+        ),
+        10_000,
+        undefined,
+      );
+      if (commands && this.query === query) this.commandsFound(commands);
+    } catch (error) {
+      log("claude", "could not list the slash commands", errorText(error));
+    }
+  }
+
+  private commandsFound(commands: ClaudeCommand[]): void {
+    this.host.commandsFound(slashCommands(commands, this.terminalCommands));
   }
 
   // Asking the person

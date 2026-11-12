@@ -1,9 +1,10 @@
 // The dodocode server. The desktop app starts it as a utility process; it can also run alone:
 //   DODOCODE_DATA_DIR=... DODOCODE_TOKEN=... node --experimental-strip-types src/main.ts
-// It listens on 127.0.0.1 only, and every request must carry the token.
+// It listens on 127.0.0.1 only, and every request must carry the token, except for the pages the
+// agent showed, which run sandboxed and must never see it.
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync } from "node:fs";
+import { createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 
 import { App, type Client } from "./app";
 import { errorText, log } from "./util";
+import { PAGE_HEIGHT_SCRIPT } from "./web-files";
 
 interface ParentPort {
   postMessage(message: unknown): void;
@@ -45,13 +47,100 @@ function requestUrl(request: IncomingMessage): URL {
   return new URL(request.url ?? "/", "http://127.0.0.1");
 }
 
-// HTTP: attachments, so the renderer can show images by URL.
+// HTTP: attachments and image files, so the renderer can show images by URL, and the pages the
+// agent showed.
+
+/**
+ * A page the agent showed runs in a sandbox of its own: its scripts run, but it has no origin,
+ * so it can read nothing of the app's, and it never sees the token. Its id is all it takes to
+ * load it, and only the server and the renderer know the ids.
+ */
+const PAGE_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Content-Security-Policy":
+    "sandbox allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads",
+  "Cache-Control": "no-store",
+  "X-Content-Type-Options": "nosniff",
+};
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Serves `/views/<id>/<file>`: a page the agent showed, and what it loads from beside it. */
+function servePage(response: ServerResponse, url: URL): void {
+  const match = /^\/views\/([^/]+)(\/.*)?$/.exec(url.pathname);
+  if (!match) {
+    response.writeHead(404, PAGE_HEADERS).end();
+    return;
+  }
+  let id: string;
+  let rest: string | undefined;
+  try {
+    id = decodeURIComponent(match[1]!);
+    rest = match[2] === undefined ? undefined : decodeURIComponent(match[2].slice(1));
+  } catch {
+    response.writeHead(400, PAGE_HEADERS).end();
+    return;
+  }
+  // The page loads its files by paths relative to its own folder.
+  if (rest === undefined) {
+    response.writeHead(308, { ...PAGE_HEADERS, Location: `${url.pathname}/` }).end();
+    return;
+  }
+  const file = app.pageFile(id, rest);
+  if (!file || !isFile(file.path)) {
+    response.writeHead(404, PAGE_HEADERS).end();
+    return;
+  }
+  if (!file.page) {
+    response.writeHead(200, { ...PAGE_HEADERS, "Content-Type": file.mime });
+    createReadStream(file.path).pipe(response);
+    return;
+  }
+  const html = readFileSync(file.path, "utf8");
+  const end = html.search(/<\/body>/i);
+  const body =
+    end === -1
+      ? html + PAGE_HEIGHT_SCRIPT
+      : html.slice(0, end) + PAGE_HEIGHT_SCRIPT + html.slice(end);
+  response.writeHead(200, { ...PAGE_HEADERS, "Content-Type": file.mime }).end(body);
+}
+
+function serveFile(
+  response: ServerResponse,
+  file: { path: string; mime: string } | undefined,
+  cache: string,
+): void {
+  const headers = { "Access-Control-Allow-Origin": "*" };
+  if (!file || !isFile(file.path)) {
+    response.writeHead(404, headers).end();
+    return;
+  }
+  response.writeHead(200, {
+    ...headers,
+    "Content-Type": file.mime,
+    "Cache-Control": cache,
+    "X-Content-Type-Options": "nosniff",
+    // An SVG opened by itself runs no script.
+    "Content-Security-Policy": "sandbox",
+  });
+  createReadStream(file.path).pipe(response);
+}
 
 function serveHttp(request: IncomingMessage, response: ServerResponse): void {
   const url = requestUrl(request);
   const headers = { "Access-Control-Allow-Origin": "*" };
   if (url.pathname === "/health") {
     response.writeHead(200, { ...headers, "Content-Type": "text/plain" }).end("ok");
+    return;
+  }
+  if (request.method === "GET" && url.pathname.startsWith("/views/")) {
+    servePage(response, url);
     return;
   }
   if (!tokenMatches(url.searchParams.get("token"))) {
@@ -61,16 +150,12 @@ function serveHttp(request: IncomingMessage, response: ServerResponse): void {
   const match = /^\/attachments\/([^/]+)$/.exec(url.pathname);
   if (request.method === "GET" && match) {
     const file = app.attachmentFile(decodeURIComponent(match[1]!));
-    if (!file || !existsSync(file.path)) {
-      response.writeHead(404, headers).end();
-      return;
-    }
-    response.writeHead(200, {
-      ...headers,
-      "Content-Type": file.mime,
-      "Cache-Control": "private, max-age=31536000, immutable",
-    });
-    createReadStream(file.path).pipe(response);
+    serveFile(response, file, "private, max-age=31536000, immutable");
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/files") {
+    // The file can change under the same path, as when the agent takes a screenshot again.
+    serveFile(response, app.imageFile(url.searchParams.get("path") ?? ""), "no-cache");
     return;
   }
   response.writeHead(404, headers).end();

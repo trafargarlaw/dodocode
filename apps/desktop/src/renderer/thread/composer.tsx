@@ -1,4 +1,6 @@
 import {
+  useEffect,
+  useId,
   useRef,
   useState,
   useSyncExternalStore,
@@ -9,7 +11,14 @@ import {
   type Ref,
 } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
-import type { ImageRef, OutgoingMessage, ProviderInfo, ThreadSettings } from "@dodocode/protocol";
+import type {
+  ContextUsage,
+  ImageRef,
+  OutgoingMessage,
+  ProviderInfo,
+  SlashCommand,
+  ThreadSettings,
+} from "@dodocode/protocol";
 import { ArrowUp02Icon, Cancel01Icon, ImageAdd01Icon, StopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@dodocode/ui/components/button";
@@ -17,9 +26,11 @@ import { Spinner } from "@dodocode/ui/components/spinner";
 import { cn } from "@dodocode/ui/lib/utils";
 import { Keys, Tip } from "../keys";
 import { providers as providerRows, reportError } from "../server/app-data";
+import { ContextMeter } from "./context-meter";
 import { uploadImage } from "./images";
 import { ModelPicker } from "./model-picker";
 import { AccessPicker } from "./pickers";
+import { commandMatches, useSlashCommands } from "./slash-commands";
 
 const isMac = window.dodocode.platform === "darwin";
 
@@ -85,6 +96,8 @@ function useDraft(key: string): Draft {
 export interface ComposerProps {
   /** Which draft the words go in: the thread's id, or one for a new thread. */
   draftKey: string;
+  /** The project the agent works in, whose own slash commands it takes too. */
+  projectId?: string;
   settings: ThreadSettings;
   onSettingsChange: (settings: ThreadSettings) => void;
   /** While a turn runs, Enter queues the message and Mod+Enter steers the turn with it. */
@@ -109,6 +122,8 @@ export interface ComposerProps {
   sendLabel?: string;
   /** Lets the button send with nothing written, as when it starts a task. */
   allowEmpty?: boolean;
+  /** How full the agent's context is, shown under the box, once it was measured. */
+  context?: ContextUsage;
   /** A second way to send, on its own button and on Alt+Enter, such as adding it to To do. */
   alternate?: {
     label: string;
@@ -120,6 +135,7 @@ export interface ComposerProps {
 
 export function Composer({
   draftKey,
+  projectId,
   settings,
   onSettingsChange,
   running,
@@ -134,9 +150,11 @@ export function Composer({
   sendLabel,
   allowEmpty,
   alternate,
+  context,
 }: ComposerProps) {
   const draft = useDraft(draftKey);
   const files = useRef<HTMLInputElement>(null);
+  const shell = useRef<HTMLDivElement>(null);
   const [dragging, setDragging] = useState(false);
   const { data: providerList = [] } = useLiveQuery({
     query: (q) => q.from({ provider: providerRows }),
@@ -147,6 +165,22 @@ export function Composer({
   const empty = !draft.text.trim() && draft.images.length === 0;
   const canSend = (!empty || allowEmpty === true) && !uploading && !reason;
   const canAlternate = !empty && !uploading && !reason && !alternate?.blocked;
+
+  // The slash commands that what is typed could start, in a menu over the box.
+  const typingCommand = draft.text.startsWith("/");
+  const commands = useSlashCommands(settings.provider, projectId, typingCommand);
+  const matches = commandMatches(commands, draft.text);
+  const [dismissed, setDismissed] = useState<string>();
+  const [pick, setPick] = useState({ text: "", index: 0 });
+  const menu = matches && matches.length > 0 && dismissed !== draft.text ? matches : undefined;
+  const picked = menu && pick.text === draft.text ? Math.min(pick.index, menu.length - 1) : 0;
+  const menuId = useId();
+
+  const fill = (text: string) => {
+    setDraft(draftKey, (current) => ({ ...current, text }));
+    shell.current?.querySelector("textarea")?.focus();
+  };
+  const complete = (command: SlashCommand) => fill(`/${command.name} `);
 
   const addImages = (list: Iterable<File>) => {
     for (const file of list) {
@@ -207,6 +241,7 @@ export function Composer({
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.nativeEvent.isComposing) return;
+    if (menu && onMenuKey(event, menu)) return;
     if (event.key === "Enter" && event.altKey && !event.shiftKey && alternate) {
       event.preventDefault();
       void send(undefined, "alternate");
@@ -224,6 +259,31 @@ export function Composer({
     }
   };
 
+  /** Moves through the command menu, or picks from it. True when the key was for the menu. */
+  const onMenuKey = (event: KeyboardEvent<HTMLTextAreaElement>, list: SlashCommand[]) => {
+    const step = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
+    if (step !== 0) {
+      event.preventDefault();
+      setPick({ text: draft.text, index: (picked + step + list.length) % list.length });
+      return true;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setDismissed(draft.text);
+      return true;
+    }
+    const command = list[picked]!;
+    // Enter on a name typed in full sends it, as it would without the menu.
+    const typedInFull = draft.text.slice(1).toLowerCase() === command.name.toLowerCase();
+    const plainEnter = event.key === "Enter" && !event.shiftKey && !event.altKey;
+    if (event.key === "Tab" || (plainEnter && !typedInFull)) {
+      event.preventDefault();
+      complete(command);
+      return true;
+    }
+    return false;
+  };
+
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const images = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
     if (images.length === 0) return;
@@ -232,7 +292,7 @@ export function Composer({
   };
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div ref={shell} className="flex flex-col gap-1.5">
       <div
         onDragOver={(event) => {
           if (!hasFiles(event)) return;
@@ -249,10 +309,19 @@ export function Composer({
           addImages(event.dataTransfer.files);
         }}
         className={cn(
-          "flex flex-col rounded-2xl border bg-card shadow-[0_1px_2px_rgb(0_0_0/0.04),0_8px_24px_-12px_rgb(0_0_0/0.12)] transition-colors focus-within:border-ring/70 dark:bg-input/20",
+          "relative flex flex-col rounded-2xl border bg-card shadow-[0_1px_2px_rgb(0_0_0/0.04),0_8px_24px_-12px_rgb(0_0_0/0.12)] transition-colors focus-within:border-ring/70 dark:bg-input/20",
           dragging && "border-primary ring-3 ring-primary/20",
         )}
       >
+        {menu && (
+          <CommandMenu
+            id={menuId}
+            commands={menu}
+            picked={picked}
+            onPick={(index) => setPick({ text: draft.text, index })}
+            onChoose={complete}
+          />
+        )}
         {draft.images.length > 0 && (
           <ul aria-label="Images to send" className="flex flex-wrap gap-2 px-3 pt-3">
             {draft.images.map((image) => (
@@ -293,6 +362,9 @@ export function Composer({
           onPaste={onPaste}
           placeholder={placeholder}
           aria-label="Message"
+          aria-autocomplete="list"
+          aria-controls={menu ? menuId : undefined}
+          aria-activedescendant={menu ? `${menuId}-${picked}` : undefined}
           // oxlint-disable-next-line jsx-a11y/no-autofocus -- the box is where a new thread starts.
           autoFocus={focusOnMount}
           rows={1}
@@ -384,11 +456,90 @@ export function Composer({
       <div className="flex min-w-0 items-center gap-2 px-1.5">
         <div className="flex min-w-0 items-center gap-0.5">{where}</div>
         <div className="ml-auto flex min-w-0 items-center gap-0.5">
+          {context && context.window > 0 && (
+            <ContextMeter
+              context={context}
+              canCompact={
+                reason ?? (running ? "It can compact once the agent stops working." : undefined)
+              }
+              onCompact={() => void onSend({ text: "/compact", images: [] })}
+              onChangeThreshold={
+                settings.provider === "claude"
+                  ? () => fill(`/autocompact ${context.autoCompactAt ?? ""}`.trimEnd() + " ")
+                  : undefined
+              }
+            />
+          )}
           {branch}
           <AccessPicker settings={settings} onChange={onSettingsChange} />
         </div>
       </div>
       <ComposerHints running={running && !empty} reason={reason} />
+    </div>
+  );
+}
+
+/** The slash commands that what is typed could start. The message box keeps the focus. */
+function CommandMenu({
+  id,
+  commands,
+  picked,
+  onPick,
+  onChoose,
+}: {
+  id: string;
+  commands: SlashCommand[];
+  picked: number;
+  onPick: (index: number) => void;
+  onChoose: (command: SlashCommand) => void;
+}) {
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    list.current?.querySelector(`[data-index="${picked}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [picked]);
+  return (
+    <div
+      ref={list}
+      id={id}
+      // A select can't show a description beside each name, and the box keeps the focus.
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
+      role="listbox"
+      aria-label="Commands"
+      className="absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-72 flex-col overflow-x-hidden overflow-y-auto rounded-xl border bg-popover p-1 text-popover-foreground shadow-lg"
+    >
+      {commands.map((command, index) => (
+        // The box handles the keys: the options only answer the pointer.
+        // oxlint-disable-next-line jsx-a11y/click-events-have-key-events
+        <div
+          key={command.name}
+          id={`${id}-${index}`}
+          data-index={index}
+          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
+          role="option"
+          aria-selected={index === picked}
+          tabIndex={-1}
+          onMouseDown={(event) => event.preventDefault()}
+          onMouseMove={() => index !== picked && onPick(index)}
+          onClick={() => onChoose(command)}
+          className={cn(
+            "flex min-w-0 shrink-0 cursor-default items-baseline gap-2 rounded-lg px-2.5 py-1.5 text-[13px]",
+            index === picked && "bg-accent text-accent-foreground",
+          )}
+        >
+          <span className="shrink-0 font-mono font-medium">/{command.name}</span>
+          {command.argumentHint && (
+            <span
+              title={command.argumentHint}
+              className="max-w-[45%] shrink-0 truncate font-mono text-xs text-muted-foreground"
+            >
+              {command.argumentHint}
+            </span>
+          )}
+          <span title={command.description} className="min-w-0 truncate text-muted-foreground">
+            {command.description}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }

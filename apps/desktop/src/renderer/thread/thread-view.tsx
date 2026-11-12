@@ -1,4 +1,4 @@
-import { useMemo, useState, type Ref } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type Ref } from "react";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import {
   unstarted,
@@ -69,7 +69,8 @@ import { duration } from "../time";
 import { openThread } from "../view";
 import { toBlocks } from "./blocks";
 import { clearDraft, Composer, readyDraft } from "./composer";
-import { BlockView, Images, Working } from "./messages";
+import { ImageGallery, Images } from "./image-view";
+import { BlockView, Working } from "./messages";
 import { MergeButton, workspaceSlots } from "./workspace";
 
 export function ThreadView({
@@ -129,73 +130,129 @@ export function ThreadView({
   });
 
   return (
-    <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]">
-      <ThreadHeader thread={thread} project={project} jobs={jobs} />
-      {items.isLoadingError ? (
-        <div className="grid place-items-center p-8 text-center text-muted-foreground">
-          This thread could not be opened. It may have been deleted.
-        </div>
-      ) : !items.isReady ? (
-        <div className="grid place-items-center">
-          <Spinner className="size-5 text-muted-foreground" />
-        </div>
-      ) : fresh ? (
-        <TaskBrief thread={thread} />
-      ) : (
-        <Transcript key={threadId} thread={thread} items={itemList} />
-      )}
-      <div className="mx-auto w-full max-w-3xl px-5 pb-4">
-        {thread.kind === "subagent" ? (
-          <SubagentNote thread={thread} />
+    <ImageGallery>
+      <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]">
+        <ThreadHeader thread={thread} project={project} jobs={jobs} />
+        {items.isLoadingError ? (
+          <div className="grid place-items-center p-8 text-center text-muted-foreground">
+            This thread could not be opened. It may have been deleted.
+          </div>
+        ) : !items.isReady ? (
+          <div className="grid place-items-center">
+            <Spinner className="size-5 text-muted-foreground" />
+          </div>
+        ) : fresh ? (
+          <TaskBrief thread={thread} />
         ) : (
-          <>
-            {queue.length > 0 && <QueueList threadId={threadId} queue={queue} running={running} />}
-            {fresh ? (
-              <Composer
-                draftKey={threadId}
-                settings={thread.settings}
-                onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
-                running={false}
-                placeholder="Add anything else the agent should know, then start"
-                sendLabel="Start"
-                allowEmpty
-                {...slots}
-                onSend={(message) =>
-                  startTask(thread, message.text || message.images.length > 0 ? message : undefined)
-                }
-                inputRef={inputRef}
-              />
-            ) : (
-              <Composer
-                draftKey={threadId}
-                settings={thread.settings}
-                onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
-                running={running}
-                placeholder={running ? "Add to what the agent is doing" : "Reply to the agent"}
-                onSend={(message, mode) => sendMessage(threadId, message, mode)}
-                onStop={() => interrupt(threadId)}
-                inputRef={inputRef}
-                {...slots}
-              />
-            )}
-          </>
+          <Transcript key={threadId} thread={thread} items={itemList} />
         )}
+        <div className="mx-auto w-full max-w-3xl px-5 pb-4">
+          {thread.kind === "subagent" ? (
+            <SubagentNote thread={thread} />
+          ) : (
+            <>
+              {queue.length > 0 && (
+                <QueueList threadId={threadId} queue={queue} running={running} />
+              )}
+              {fresh ? (
+                <Composer
+                  draftKey={threadId}
+                  projectId={thread.projectId}
+                  settings={thread.settings}
+                  onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
+                  running={false}
+                  placeholder="Add anything else the agent should know, then start"
+                  sendLabel="Start"
+                  allowEmpty
+                  {...slots}
+                  onSend={(message) =>
+                    startTask(
+                      thread,
+                      message.text || message.images.length > 0 ? message : undefined,
+                    )
+                  }
+                  inputRef={inputRef}
+                />
+              ) : (
+                <Composer
+                  draftKey={threadId}
+                  projectId={thread.projectId}
+                  context={thread.context}
+                  settings={thread.settings}
+                  onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
+                  running={running}
+                  placeholder={running ? "Add to what the agent is doing" : "Reply to the agent"}
+                  onSend={(message, mode) => sendMessage(threadId, message, mode)}
+                  onStop={() => interrupt(threadId)}
+                  inputRef={inputRef}
+                  {...slots}
+                />
+              )}
+            </>
+          )}
+        </div>
       </div>
-    </div>
+    </ImageGallery>
   );
 }
 
+/** How long a fold in the transcript takes to open or close, with a frame or two to spare. */
+const FOLD_MS = 300;
+
+/**
+ * Opening or closing a fold changes the height of the transcript, and two things would then move
+ * the fold away from under the pointer: the scroller following its end, and the browser keeping
+ * what is below the fold in place (scroll anchoring). So a fold stops the scroller following, as
+ * scrolling does, and it follows again once the fold has stopped moving and the person is back
+ * at the end. The browser keeps nothing in place until the next scroll: the place it kept before
+ * the click would pull the fold up the next time anything changes.
+ */
+function useFoldsStayPut() {
+  const [moving, setMoving] = useState(false);
+  const [unanchored, setUnanchored] = useState(false);
+  const timer = useRef<number>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+
+  function onClickCapture(event: MouseEvent<HTMLDivElement>) {
+    if (!(event.target instanceof Element)) return;
+    if (!event.target.closest('[data-slot$="collapsible-trigger"]')) return;
+    // The scroller takes a wheel event as the person scrolling, and stops following the end.
+    event.currentTarget.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    setMoving(true);
+    setUnanchored(true);
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setMoving(false), FOLD_MS);
+  }
+
+  function onScroll() {
+    // A scroll makes the browser pick a new place to keep, so it can keep places again.
+    if (unanchored && !moving) setUnanchored(false);
+  }
+
+  return { moving, unanchored, onClickCapture, onScroll };
+}
+
 function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
-  const blocks = useMemo(() => toBlocks(items), [items]);
+  const running = thread.status === "running";
+  const blocks = useMemo(() => toBlocks(items, running), [items, running]);
+  const folds = useFoldsStayPut();
   const last = items.at(-1);
   const streamingText = last?.type === "assistant" && last.streaming && last.text.length > 0;
-  const showWorking = thread.status === "running" && !streamingText;
+  const showWorking = running && !streamingText;
   const turnStart = last ? items.find((item) => item.turnId === last.turnId)?.createdAt : undefined;
 
   return (
-    <MessageScrollerProvider autoScroll defaultScrollPosition="end" scrollPreviousItemPeek={48}>
+    <MessageScrollerProvider
+      autoScroll={!folds.moving}
+      defaultScrollPosition="end"
+      scrollPreviousItemPeek={48}
+    >
       <MessageScroller>
-        <MessageScrollerViewport>
+        <MessageScrollerViewport
+          className={cn(folds.unanchored && "[overflow-anchor:none]")}
+          onClickCapture={folds.onClickCapture}
+          onScroll={folds.onScroll}
+        >
           <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-5 px-6 pt-6 pb-8">
             {blocks.length === 0 && !showWorking && (
               <p className="m-auto text-muted-foreground">Nothing here yet.</p>
@@ -211,7 +268,11 @@ function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
             ))}
             {showWorking && (
               <MessageScrollerItem>
-                <Working since={turnStart} waiting={false} />
+                <Working
+                  since={turnStart}
+                  waiting={false}
+                  label={thread.context?.compacting ? "Compacting the conversation" : undefined}
+                />
               </MessageScrollerItem>
             )}
             {thread.status === "error" && thread.error && (
@@ -447,7 +508,7 @@ function TaskBrief({ thread }: { thread: Thread }) {
                   </p>
                 )}
                 {item.images && item.images.length > 0 && (
-                  <Images images={item.images} className="justify-start" />
+                  <Images images={item.images} align="start" />
                 )}
               </li>
             );

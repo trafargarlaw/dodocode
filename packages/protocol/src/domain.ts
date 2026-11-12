@@ -30,6 +30,29 @@ export interface ProviderInfo {
   models: ModelOption[];
 }
 
+/** A command typed as `/name` at the start of a message, which the agent runs itself. */
+export interface SlashCommand {
+  /** Without the slash. */
+  name: string;
+  description: string;
+  /** What it takes after its name, e.g. `<tokens>`. */
+  argumentHint?: string;
+}
+
+/** How full the agent's context window is. */
+export interface ContextUsage {
+  /** Tokens the conversation takes up now. */
+  used: number;
+  /** Tokens the window holds. */
+  window: number;
+  /** Where the agent compacts the conversation by itself. Unset when it doesn't. */
+  autoCompactAt?: number;
+  /** Set while the agent compacts the conversation. */
+  compacting?: boolean;
+  /** When it was measured. */
+  at: number;
+}
+
 /** The settings a thread runs with. Each turn uses the settings the thread has when it starts. */
 export interface ThreadSettings {
   provider: ProviderId;
@@ -158,6 +181,8 @@ export interface Thread {
   pinned?: boolean;
   /** Hidden from the lists. Search still finds it. */
   archived?: boolean;
+  /** How full the agent's context is, as last measured. Unset before its first turn. */
+  context?: ContextUsage;
 }
 
 /** An image the person pasted or dropped, kept by the server. */
@@ -243,6 +268,8 @@ export interface ToolItem extends ItemBase {
   /** Set while the call runs in the background. */
   background?: boolean;
   endedAt?: number;
+  /** Images the call gave back, such as a screenshot or an image file it read. */
+  images?: ImageRef[];
 }
 
 export interface ApprovalOption {
@@ -292,6 +319,16 @@ export interface NoticeItem extends ItemBase {
   text: string;
 }
 
+/** A web page the agent showed in the conversation, such as a mock-up or a chart. */
+export interface ViewItem extends ItemBase {
+  type: "view";
+  title: string;
+  /** Where the server serves the page: see `viewPath`. */
+  viewId: string;
+  /** The file it came from, when the agent showed a file. */
+  path?: string;
+}
+
 /** The end of a turn, with what it took. */
 export interface TurnEndItem extends ItemBase {
   type: "turn_end";
@@ -311,6 +348,7 @@ export type Item =
   | ApprovalItem
   | QuestionItem
   | NoticeItem
+  | ViewItem
   | TurnEndItem;
 
 export type ItemType = Item["type"];
