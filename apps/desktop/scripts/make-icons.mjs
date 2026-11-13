@@ -1,6 +1,7 @@
 // Makes every app icon from the two logo sources in build/:
 // - logo.svg, the colour mark: the app icon on macOS, Windows and Linux;
-// - tray.svg, the one-colour mark: the tray and menu bar icons.
+// - tray.svg, the one-colour mark: the tray and menu bar icons, in resources/tray. The app has no
+//   tray yet, and does not ship them (see electron-builder.yml).
 // Run it after changing either: `pnpm --filter @dodocode/desktop icons`.
 // It runs in Electron, so Chromium draws each SVG at each size instead of scaling one bitmap.
 import { mkdir, readFile, writeFile } from "node:fs/promises";

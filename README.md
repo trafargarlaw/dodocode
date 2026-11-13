@@ -35,7 +35,8 @@ pnpm format     # oxfmt
 ## Icons
 
 `apps/desktop/build/logo.svg` is the logo, and `apps/desktop/build/tray.svg` is its one-colour
-version for the tray. After changing either, make the icons again:
+version for a tray icon, which the app does not show yet. After changing either, make the icons
+again:
 
 ```sh
 pnpm --filter @dodocode/desktop icons
@@ -48,6 +49,6 @@ pnpm --filter @dodocode/desktop icons
   - `src/preload`: the bridge the UI reaches as `window.dodocode`
   - `src/renderer`: the React UI
   - `build`: the logo and the app icons made from it
-  - `resources`: images the main process opens at runtime, such as the tray icons
+  - `resources`: the tray icons, made ahead of a tray; the app does not ship them yet
 - `packages/ui`: shared shadcn components, hooks and theme (`@dodocode/ui`)
 - `packages/typescript-config`: shared TypeScript settings

@@ -3,8 +3,8 @@ directories:
   output: release
 files:
   - out/**/*
-  # Images the main process opens by path, such as the tray icons.
-  - resources/**/*
+  # resources/ holds the tray icons, made ahead of a tray the app does not have yet. Nothing opens
+  # them, so the app leaves them out: add `resources/**/*` here with the first code that does.
   - package.json
 # The Claude Agent SDK runs its platform's `claude` binary, which can't run from inside the asar.
 asarUnpack:
