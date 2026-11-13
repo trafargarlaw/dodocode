@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +7,7 @@ import type { Item, Method, Params, Project, Result, Thread } from "@dodocode/pr
 
 import { App, type Client } from "./app";
 import type {
+  FoundSession,
   Provider,
   ProviderCheck,
   ProviderSession,
@@ -19,6 +20,14 @@ import { errorText } from "./util";
 /** What a fake agent does in a turn. The turn ends when this is done, and fails if it throws. */
 export type FakeTurn = (host: SessionHost, message: TurnMessage) => void | Promise<void>;
 
+/** A conversation the fake agent had in another app: one message, and the agent's reply. */
+export interface FakeConversation extends FoundSession {
+  /** What the person said in it. */
+  said: string;
+  /** An image the person sent with it: a PNG, base64 encoded. */
+  image?: string;
+}
+
 /**
  * An agent for tests that runs no model. Each turn does what the test set for the thread's
  * role. It stands in for Claude, the provider threads start with.
@@ -30,11 +39,41 @@ export class FakeAgent implements Provider {
   worker: FakeTurn = () => {};
   /** What a reviewer does in a turn. */
   reviewer: FakeTurn = () => {};
+  /**
+   * Its conversations in other apps, as they list. As with Claude, the sessions of dodocode's
+   * own threads list too, and so does a copy once it is made.
+   */
+  elsewhere: FakeConversation[] = [];
+  /** Set to make copying a conversation fail. */
+  copyFails = false;
+  private made = 0;
   readonly sessions: SessionSource = {
-    list: () => Promise.resolve([]),
-    read: () => Promise.reject(new Error("The fake agent had no conversations elsewhere.")),
-    copy: () => Promise.reject(new Error("The fake agent had no conversations elsewhere.")),
+    list: () => Promise.resolve(this.elsewhere.toSorted((a, b) => b.updatedAt - a.updatedAt)),
+    read: (id, history) => {
+      const found = this.conversation(id);
+      const main = history.main;
+      main.clock.at = found.updatedAt;
+      main.startTurn(false);
+      const image = found.image ? history.keepImage(found.image, "image/png") : undefined;
+      main.add({ type: "user", text: found.said, images: image ? [image] : [] });
+      main.add({ type: "assistant", text: "Done.", streaming: false });
+      main.endTurn("completed");
+      return Promise.resolve({});
+    },
+    copy: (id) => {
+      const found = this.conversation(id);
+      if (this.copyFails) return Promise.reject(new Error("The copy could not be written."));
+      const copy = { ...found, id: `${id}-copy`, app: "an Agent SDK app" };
+      this.elsewhere.push(copy);
+      return Promise.resolve(copy.id);
+    },
   };
+
+  private conversation(id: string): FakeConversation {
+    const found = this.elsewhere.find((conversation) => conversation.id === id);
+    if (!found) throw new Error(`The fake agent had no conversation ${id}.`);
+    return found;
+  }
 
   check(): Promise<ProviderCheck> {
     return Promise.resolve({
@@ -48,6 +87,18 @@ export class FakeAgent implements Provider {
   createSession(host: SessionHost): ProviderSession {
     return {
       startTurn: (message) => {
+        if (!host.resumeId) {
+          const id = `session-${++this.made}`;
+          host.saveResumeId(id);
+          this.elsewhere.push({
+            id,
+            title: message.text,
+            cwd: host.cwd,
+            app: "an Agent SDK app",
+            updatedAt: Date.now(),
+            said: message.text,
+          });
+        }
         const turn = host.reviewing ? this.reviewer : this.worker;
         // As with a real agent, the turn runs on after `startTurn` returns.
         void Promise.resolve()
@@ -72,6 +123,8 @@ export interface TestApp {
   agent: FakeAgent;
   /** A git repository with one commit. */
   project: Project;
+  /** A folder of the test's own, which holds the project's. */
+  dir: string;
   call<M extends Method>(method: M, params: Params<M>): Promise<Result<M>>;
   /** The thread as the app has it now. */
   thread(threadId: string): Promise<Thread>;
@@ -80,6 +133,8 @@ export interface TestApp {
   messages(threadId: string): Promise<string[]>;
   /** The notes the app wrote in a thread. */
   notes(threadId: string): Promise<string[]>;
+  /** The names of the files the app keeps images in. */
+  attachments(): string[];
   /** Runs git in the project's folder, and gives its output. */
   git(...args: string[]): string;
   /** Stops the app and starts it again on the same data, as the person quitting and coming back. */
@@ -124,6 +179,7 @@ export async function testApp(): Promise<TestApp> {
     },
     agent,
     project,
+    dir,
     call,
     thread: async (threadId) => (await call("thread.open", { threadId })).thread,
     items,
@@ -131,6 +187,10 @@ export async function testApp(): Promise<TestApp> {
       (await items(threadId)).flatMap((item) => (item.type === "user" ? [item.text] : [])),
     notes: async (threadId) =>
       (await items(threadId)).flatMap((item) => (item.type === "notice" ? [item.text] : [])),
+    attachments: () =>
+      readdirSync(join(data, "attachments"), { withFileTypes: true })
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name),
     git,
     restart: async () => {
       await app.dispose();
