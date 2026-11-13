@@ -262,6 +262,11 @@ export interface ThreadOrigin {
    * on too. `copy`: it carries on a copy, and the original stays as it was.
    */
   mode: "same" | "copy";
+  /**
+   * Set when the folder it worked in was gone as it was brought in. It has the history only, and
+   * never carries on, though the folder comes back.
+   */
+  folderGone?: boolean;
   /** When it was brought in. */
   broughtAt: number;
 }
