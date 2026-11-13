@@ -75,7 +75,7 @@ import {
   type ReviewBrief,
   undecided,
 } from "./review";
-import { carriedModel, projectHolding } from "./sessions";
+import { carriedModel, type Checkout, placeFor, projectHolding } from "./sessions";
 import { Store } from "./store";
 import { itemFrom, merged, moved, promoted, reopened, split, todoTask } from "./tasks";
 import { ThreadRuntime, type ThreadContext, type ThreadMessage } from "./thread";
@@ -1097,15 +1097,15 @@ export class App implements ThreadContext {
 
   /** The project a conversation from another app goes in, by the folder it worked in. */
   private async placeOf(cwd: string): Promise<SessionPlace> {
-    const holding = projectHolding(this.projects.values(), cwd);
-    if (!existsSync(cwd)) return { ...(holding ? known(holding) : {}), folderGone: true };
-    if (holding) return known(holding);
-    // A worktree the other app made of a project's repository goes with the project.
-    const main = await mainCheckout(cwd).catch(() => undefined);
-    const ofRepo = main ? projectHolding(this.projects.values(), main) : undefined;
-    if (ofRepo) return known(ofRepo);
-    const path = main ?? cwd;
-    return { project: { name: basename(path) || path, path } };
+    const projects = [...this.projects.values()];
+    if (!existsSync(cwd)) {
+      const holding = projectHolding(projects, cwd);
+      return { ...(holding ? known(holding) : {}), folderGone: true };
+    }
+    const placing = placeFor(projects, cwd, await checkoutOf(cwd));
+    if (!placing) return {};
+    if ("project" in placing) return known(placing.project);
+    return { project: { name: basename(placing.add) || placing.add, path: placing.add } };
   }
 
   private bringIn(provider: ProviderId, sessionId: string, mode: OriginMode): Promise<Thread> {
@@ -1623,6 +1623,14 @@ function broughtNotice(app: string, mode: OriginMode, place: SessionPlace): stri
   return mode === "same"
     ? `Brought in from ${app}. It carries on the same conversation from here.`
     : `Brought in from ${app} as a copy. It goes its own way from here; the original stays in ${app}.`;
+}
+
+/** The checkout a folder is in, and its repository's main checkout. Unset outside a repository. */
+async function checkoutOf(folder: string): Promise<Checkout | undefined> {
+  const repo = await repoOf(folder).catch(() => undefined);
+  if (!repo) return undefined;
+  const main = await mainCheckout(folder).catch(() => undefined);
+  return { root: repo.root, main: main ?? repo.root };
 }
 
 /** A project, as the place a conversation from another app goes in. */
