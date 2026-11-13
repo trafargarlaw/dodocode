@@ -76,7 +76,7 @@ import {
   undecided,
 } from "./review";
 import { carriedModel, type Checkout, placeFor, projectHolding } from "./sessions";
-import { Store } from "./store";
+import { Store, type StoredAttachment } from "./store";
 import { itemFrom, merged, moved, promoted, reopened, split, todoTask } from "./tasks";
 import { ThreadRuntime, type ThreadContext, type ThreadMessage } from "./thread";
 import { errorText, log, newId } from "./util";
@@ -335,14 +335,20 @@ export class App implements ThreadContext {
   }
 
   keepFile(data: Buffer, mime: string, name: string): ImageRef | undefined {
+    const attachment = this.newAttachment(mime, name);
+    if (!attachment) return undefined;
+    writeFileSync(attachment.path, data);
+    this.store.saveAttachment(attachment);
+    return refOf(attachment);
+  }
+
+  /** Where an image of a type that is kept would go, with the id it would have. */
+  private newAttachment(mime: string, name: string): StoredAttachment | undefined {
     const extension = IMAGE_EXTENSIONS[mime];
     if (!extension) return undefined;
     const id = newId();
     const path = join(this.attachmentsDir, `${id}${extension}`);
-    writeFileSync(path, data);
-    const ref = { id, name: name || `image${extension}`, mime };
-    this.store.saveAttachment({ ...ref, path });
-    return ref;
+    return { id, name: name || `image${extension}`, mime, path };
   }
 
   keepPage(page: PageRequest, cwd: string): string {
@@ -1138,7 +1144,13 @@ export class App implements ThreadContext {
     const provider = this.provider(providerId);
     const session = await this.foundSession(providerId, sessionId);
     const threadId = newId();
-    const history = new History(threadId, (data, mime, name) => this.keepFile(data, mime, name));
+    // Its images are kept with the rest of it, so one that can't be brought in keeps none.
+    const images: { attachment: StoredAttachment; data: Buffer }[] = [];
+    const history = new History(threadId, (data, mime, name) => {
+      const attachment = this.newAttachment(mime, name);
+      if (attachment) images.push({ attachment, data });
+      return attachment && refOf(attachment);
+    });
     const read = await provider.sessions.read(sessionId, history);
     const place = await this.placeOf(session.cwd);
     // Where what happened there ends, and what happens here begins.
@@ -1204,31 +1216,42 @@ export class App implements ThreadContext {
       };
       return { thread: childThread, items: childItems };
     });
-    // The copy comes last, once all else is ready: it is made in the other app, and nothing here
-    // takes it away again. One whose folder is gone never carries on, so it needs none.
-    const resumeId = place.folderGone
-      ? undefined
-      : mode === "same"
-        ? sessionId
-        : await provider.sessions.copy(sessionId, session.cwd);
-    // Kept apart from the thread, so a copy left by a save that failed isn't offered either.
-    if (resumeId && mode === "copy") this.store.saveOwnSession(providerId, resumeId);
-    this.store.transaction(() => {
-      this.store.saveThread(thread);
-      if (resumeId) {
-        this.store.saveResumePoints(thread.id, {
-          [providerId]: {
-            id: resumeId,
-            ...(read.costUsd !== undefined ? { costUsd: read.costUsd } : {}),
-          },
-        });
+    const written: string[] = [];
+    try {
+      for (const { attachment, data } of images) {
+        writeFileSync(attachment.path, data);
+        written.push(attachment.path);
       }
-      for (const item of items) this.store.saveItem(item);
-      for (const child of children) {
-        this.store.saveThread(child.thread);
-        for (const item of child.items) this.store.saveItem(item);
-      }
-    });
+      // The copy comes last, once all else is ready: it is made in the other app, and nothing
+      // here takes it away again. One whose folder is gone never carries on, so it needs none.
+      const resumeId = place.folderGone
+        ? undefined
+        : mode === "same"
+          ? sessionId
+          : await provider.sessions.copy(sessionId, session.cwd);
+      // Kept apart from the thread, so a copy left by a save that failed isn't offered either.
+      if (resumeId && mode === "copy") this.store.saveOwnSession(providerId, resumeId);
+      this.store.transaction(() => {
+        this.store.saveThread(thread);
+        if (resumeId) {
+          this.store.saveResumePoints(thread.id, {
+            [providerId]: {
+              id: resumeId,
+              ...(read.costUsd !== undefined ? { costUsd: read.costUsd } : {}),
+            },
+          });
+        }
+        for (const item of items) this.store.saveItem(item);
+        for (const child of children) {
+          this.store.saveThread(child.thread);
+          for (const item of child.items) this.store.saveItem(item);
+        }
+        for (const { attachment } of images) this.store.saveAttachment(attachment);
+      });
+    } catch (error) {
+      for (const path of written) rmSync(path, { force: true });
+      throw error;
+    }
     this.emit({ type: "thread", thread });
     for (const child of children) this.emit({ type: "thread", thread: child.thread });
     log(
@@ -1639,6 +1662,11 @@ async function checkoutOf(folder: string): Promise<Checkout | undefined> {
   if (!repo) return undefined;
   const main = await mainCheckout(folder).catch(() => undefined);
   return { root: repo.root, main: main ?? repo.root };
+}
+
+/** What a client knows an attachment by. */
+function refOf({ path: _path, ...ref }: StoredAttachment): ImageRef {
+  return ref;
 }
 
 /** A project, as the place a conversation from another app goes in. */
