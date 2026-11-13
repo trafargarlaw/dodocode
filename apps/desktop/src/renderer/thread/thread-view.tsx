@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type Ref } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+  type Ref,
+  type UIEvent,
+} from "react";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import {
   unstarted,
@@ -67,7 +75,7 @@ import { GROUP_LABEL } from "../task-list";
 import { MoveItems, StatusGlyph } from "../task-ui";
 import { duration } from "../time";
 import { openThread } from "../view";
-import { toBlocks } from "./blocks";
+import { toBlocks, type Block } from "./blocks";
 import { clearDraft, Composer, readyDraft } from "./composer";
 import { ImageGallery, Images } from "./image-view";
 import { BlockView, Working } from "./messages";
@@ -232,9 +240,53 @@ function useFoldsStayPut() {
   return { moving, unanchored, onClickCapture, onScroll };
 }
 
+/** The newest blocks a thread opens on. Building all 160 of a long thread took 0.1-0.2s. */
+const FIRST_BLOCKS = 40;
+/** How many older blocks join at a time. */
+const MORE_BLOCKS = 40;
+
+/**
+ * The first block to show. A thread opens on its newest blocks, and older ones join as the reader
+ * scrolls within a viewport's height of the top. They also join while the blocks shown fill less
+ * than two viewports, so there is always room to scroll up. The browser keeps the view in place
+ * as blocks join above it (scroll anchoring), also while a wheel scroll is still moving.
+ */
+function useOlderBlocks(count: number) {
+  const [first, setFirst] = useState(() => Math.max(0, count - FIRST_BLOCKS));
+  // A thread that lost blocks still shows its newest ones.
+  const start = Math.min(first, Math.max(0, count - FIRST_BLOCKS));
+  const viewport = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const element = viewport.current;
+    if (element && start > 0 && element.scrollHeight < element.clientHeight * 2) {
+      setFirst(Math.max(0, start - MORE_BLOCKS));
+    }
+  }, [start]);
+
+  function onScroll(event: UIEvent<HTMLDivElement>) {
+    const element = event.currentTarget;
+    if (start > 0 && element.scrollTop < element.clientHeight) {
+      setFirst(Math.max(0, start - MORE_BLOCKS));
+    }
+  }
+
+  return { start, viewport, onScroll };
+}
+
+/** The transcript's blocks. Those that show the same as last time stay as they were, to skip drawing. */
+function useBlocks(items: Item[], running: boolean): Block[] {
+  const [drawn, setDrawn] = useState(() => ({ items, running, blocks: toBlocks(items, running) }));
+  if (drawn.items === items && drawn.running === running) return drawn.blocks;
+  const blocks = toBlocks(items, running, drawn.blocks);
+  setDrawn({ items, running, blocks });
+  return blocks;
+}
+
 function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
   const running = thread.status === "running";
-  const blocks = useMemo(() => toBlocks(items, running), [items, running]);
+  const blocks = useBlocks(items, running);
+  const { viewport: olderViewport, ...older } = useOlderBlocks(blocks.length);
   const folds = useFoldsStayPut();
   const last = items.at(-1);
   const streamingText = last?.type === "assistant" && last.streaming && last.text.length > 0;
@@ -249,15 +301,19 @@ function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
     >
       <MessageScroller>
         <MessageScrollerViewport
+          ref={olderViewport}
           className={cn(folds.unanchored && "[overflow-anchor:none]")}
           onClickCapture={folds.onClickCapture}
-          onScroll={folds.onScroll}
+          onScroll={(event) => {
+            folds.onScroll();
+            older.onScroll(event);
+          }}
         >
           <MessageScrollerContent className="mx-auto w-full max-w-3xl gap-5 px-6 pt-6 pb-8">
             {blocks.length === 0 && !showWorking && (
               <p className="m-auto text-muted-foreground">Nothing here yet.</p>
             )}
-            {blocks.map((block) => (
+            {blocks.slice(older.start).map((block) => (
               <MessageScrollerItem
                 key={block.id}
                 messageId={block.id}

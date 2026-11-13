@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import type { NoticeItem, TurnEndItem, UserItem } from "@dodocode/protocol";
 import {
   Alert02Icon,
@@ -21,7 +21,8 @@ import { compact, cost } from "./numbers";
 import { PageView } from "./page-view";
 import { StepsBlock } from "./steps";
 
-export function BlockView({ block }: { block: Block }) {
+/** A block of the transcript. It draws again only when the block does: `toBlocks` keeps the rest. */
+export const BlockView = memo(function BlockView({ block }: { block: Block }) {
   switch (block.kind) {
     case "user":
       return <UserMessage item={block.item} />;
@@ -40,7 +41,7 @@ export function BlockView({ block }: { block: Block }) {
     case "turn_end":
       return <TurnEnd item={block.item} />;
   }
-}
+});
 
 function UserMessage({ item }: { item: UserItem }) {
   return (

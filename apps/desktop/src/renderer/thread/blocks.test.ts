@@ -4,6 +4,18 @@ import { diffLines, toBlocks, type DiffLine } from "./blocks";
 
 const base = { threadId: "t", turnId: "turn", seq: 1, createdAt: 0 };
 
+const tool = (id: string): Item => ({
+  ...base,
+  id,
+  type: "tool",
+  kind: "command",
+  name: "Bash",
+  title: "ls",
+  input: {},
+  output: "",
+  status: "done",
+});
+
 test("toBlocks groups thinking and tool calls in a row into one block, keyed by the first", () => {
   const items: Item[] = [
     { ...base, id: "u1", type: "user", text: "Fix it", images: [] },
@@ -48,17 +60,6 @@ test("toBlocks groups thinking and tool calls in a row into one block, keyed by 
 });
 
 test("while the thread runs, the steps after its last message are not settled", () => {
-  const tool = (id: string): Item => ({
-    ...base,
-    id,
-    type: "tool",
-    kind: "command",
-    name: "Bash",
-    title: "ls",
-    input: {},
-    output: "",
-    status: "done",
-  });
   const items: Item[] = [
     { ...base, id: "u1", type: "user", text: "Fix it", images: [] },
     tool("t1"),
@@ -82,6 +83,30 @@ test("while the thread runs, the steps after its last message are not settled", 
     ["t2", true],
     ["t3", true],
   ]);
+});
+
+test("toBlocks keeps the blocks that show the same items as before, and makes the rest anew", () => {
+  const user: Item = { ...base, id: "u1", type: "user", text: "Fix it", images: [] };
+  const [t1, t2, t3] = [tool("t1"), tool("t2"), tool("t3")];
+  const answer: Item = { ...base, id: "a1", type: "assistant", text: "Look", streaming: true };
+  const before = toBlocks([user, t1, answer, t2], true);
+
+  // The answer grows, a step joins the last trace, and the first trace stays as it was.
+  const longer: Item = { ...answer, text: "Looking" };
+  const after = toBlocks([user, t1, longer, t2, t3], true, before);
+
+  expect(after[0]).toBe(before[0]);
+  expect(after[1]).toBe(before[1]);
+  expect(after[2]).toMatchObject({ id: "a1", item: { text: "Looking" } });
+  expect(after[2]).not.toBe(before[2]);
+  expect(after[3]).toMatchObject({ id: "t2", settled: false });
+  expect(after[3]).not.toBe(before[3]);
+
+  // The same steps, settled once the thread stops, are a new block too.
+  const stopped = toBlocks([user, t1, longer, t2, t3], false, after);
+  expect(stopped[3]).toMatchObject({ id: "t2", settled: true });
+  expect(stopped[3]).not.toBe(after[3]);
+  expect(stopped[0]).toBe(before[0]);
 });
 
 describe("diffLines", () => {

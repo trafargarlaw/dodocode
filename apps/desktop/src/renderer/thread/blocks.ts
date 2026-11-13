@@ -34,8 +34,15 @@ export type Block =
  *
  * While the thread runs, the steps after its last message or end of turn are not settled: the
  * agent is still at them, between one step and the next.
+ *
+ * A block in `previous` that shows the same items, the same objects, comes back as it was, so a
+ * view of it can skip drawing it again. The collection gives a changed item as a new object.
  */
-export function toBlocks(items: readonly Item[], running: boolean): Block[] {
+export function toBlocks(
+  items: readonly Item[],
+  running: boolean,
+  previous: readonly Block[] = [],
+): Block[] {
   const blocks: Block[] = [];
   for (const item of items) {
     if (item.type === "reasoning" || item.type === "tool") {
@@ -75,7 +82,22 @@ export function toBlocks(items: readonly Item[], running: boolean): Block[] {
       if (block.kind === "steps") block.settled = false;
     }
   }
-  return blocks;
+  const before = new Map(previous.map((block) => [block.id, block]));
+  return blocks.map((block) => {
+    const old = before.get(block.id);
+    return old && showsSame(old, block) ? old : block;
+  });
+}
+
+function showsSame(a: Block, b: Block): boolean {
+  if (a.kind === "steps" && b.kind === "steps") {
+    return (
+      a.settled === b.settled &&
+      a.steps.length === b.steps.length &&
+      a.steps.every((step, index) => step === b.steps[index])
+    );
+  }
+  return a.kind !== "steps" && b.kind !== "steps" && a.item === b.item;
 }
 
 export type DiffLineKind = "added" | "removed" | "hunk" | "context";
