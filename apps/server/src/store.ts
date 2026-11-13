@@ -42,7 +42,7 @@ const SCHEMA = `
     data text not null,
     path text not null
   );
-  -- Agent sessions dodocode made whose threads are gone, as provider:id.
+  -- Agent sessions dodocode made that no thread picks up any more, as provider:id.
   create table if not exists own_sessions (
     session text primary key
   );
@@ -180,7 +180,7 @@ export class Store {
 
   /**
    * The agent sessions that are dodocode's, as `provider:id`: those its threads pick up, and
-   * those of threads deleted since.
+   * those they let go of, or that went with a deleted thread.
    */
   ownSessions(): Set<string> {
     const kept = this.sql("select session from own_sessions").all() as { session: string }[];
@@ -200,22 +200,25 @@ export class Store {
   }
 
   /**
-   * Keeps the sessions a thread picks up, before it goes. Not the conversation it was brought in
-   * as, when it carries that same one on: that is the person's, from the other app.
+   * Keeps the sessions a thread lets go of, as it goes or picks up `next` in their place. Not
+   * the conversation it was brought in as, when it carries that same one on: that is the
+   * person's, from the other app.
    */
-  private keepOwnSessions(threadId: string): void {
+  private keepOwnSessions(threadId: string, next: ResumePoints = {}): void {
     const row = this.sql("select data, resume from threads where id = ?").get(threadId) as
       | { data: string; resume: string }
       | undefined;
     if (!row) return;
     const { origin } = JSON.parse(row.data) as Thread;
     for (const [provider, point] of Object.entries(parseResume(row.resume))) {
+      const still = next[provider as ProviderId]?.id === point.id;
       const theirs = origin?.provider === provider && origin.sessionId === point.id;
-      if (!theirs) this.saveOwnSession(provider as ProviderId, point.id);
+      if (!still && !theirs) this.saveOwnSession(provider as ProviderId, point.id);
     }
   }
 
   saveResumePoints(threadId: string, points: ResumePoints): void {
+    this.keepOwnSessions(threadId, points);
     this.sql("update threads set resume = ? where id = ?").run(JSON.stringify(points), threadId);
   }
 
