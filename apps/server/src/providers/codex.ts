@@ -1,6 +1,8 @@
 // Codex, through `codex app-server`. One process serves every thread; its notifications and
 // requests carry a Codex thread id, which routes them to the dodocode thread they belong to.
 
+import { open } from "node:fs/promises";
+
 import type { ModelOption, Question, SlashCommand, ThreadSettings } from "@dodocode/protocol";
 
 import { errorText, log, wellFormed } from "../util";
@@ -35,6 +37,53 @@ const CODEX_COMMANDS: SlashCommand[] = [
 /** Whether a message is `/compact`, which Codex runs as a compaction rather than a prompt. */
 export function isCompact(text: string): boolean {
   return /^\/compact\s*$/i.test(text.trim());
+}
+
+/** How much of a thread's saved file is read for its first line. That line holds Codex's own instructions, about 25 KB. */
+const FIRST_LINE_LIMIT = 1024 * 1024;
+
+/**
+ * The names of the tools a Codex thread started with, from the first line of the file Codex
+ * saves it in. Unset when the line doesn't say.
+ */
+export function toolsAtStart(line: string): string[] | undefined {
+  let meta: unknown;
+  try {
+    meta = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  const { type, payload } = (meta ?? {}) as { type?: unknown; payload?: unknown };
+  if (type !== "session_meta" || typeof payload !== "object" || payload === null) return undefined;
+  // Codex leaves the field out for a thread that started with none.
+  const tools = (payload as { dynamic_tools?: unknown }).dynamic_tools ?? [];
+  if (!Array.isArray(tools)) return undefined;
+  return tools.flatMap((tool: { name?: unknown } | null) =>
+    typeof tool?.name === "string" ? [tool.name] : [],
+  );
+}
+
+/** The tools a Codex thread started with, read from its saved file. Unset when that can't tell. */
+async function toolsOfThread(path: string): Promise<string[] | undefined> {
+  try {
+    const file = await open(path, "r");
+    try {
+      const { buffer, bytesRead } = await file.read(
+        Buffer.alloc(FIRST_LINE_LIMIT),
+        0,
+        FIRST_LINE_LIMIT,
+        0,
+      );
+      const text = buffer.toString("utf8", 0, bytesRead);
+      const end = text.indexOf("\n");
+      return toolsAtStart(end === -1 ? text : text.slice(0, end));
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    log("codex", "could not read the tools of a thread", errorText(error));
+    return undefined;
+  }
 }
 
 interface CodexModel {
@@ -296,17 +345,26 @@ class CodexSession implements ProviderSession, Route {
     const resumeId = this.host.resumeId;
     let threadId: string | undefined;
     if (resumeId) {
-      const resume = () =>
-        server.request("thread/resume", { threadId: resumeId, excludeTurns: true, ...common });
+      // Gives the file Codex saves the thread in.
+      const resume = async () => {
+        const result = (await server.request("thread/resume", {
+          threadId: resumeId,
+          excludeTurns: true,
+          ...common,
+        })) as { thread?: { path?: string | null } };
+        return result.thread?.path ?? undefined;
+      };
       try {
+        let path: string | undefined;
         try {
-          await resume();
+          path = await resume();
         } catch (error) {
           if (!/archived|codex unarchive/i.test(errorText(error))) throw error;
           await server.request("thread/unarchive", { threadId: resumeId });
-          await resume();
+          path = await resume();
         }
         threadId = resumeId;
+        if (path) await this.toolsMissing(path);
       } catch (error) {
         const message = errorText(error);
         if (/active writer/i.test(message)) {
@@ -337,6 +395,23 @@ class CodexSession implements ProviderSession, Route {
     this.threadId = threadId;
     this.provider.addRoute(threadId, this);
     return threadId;
+  }
+
+  /**
+   * Says so when a thread it reopened started without some of the app's tools: one from before
+   * a tool was added, or from another app. Codex can't give a thread tools once it started.
+   */
+  private async toolsMissing(path: string): Promise<void> {
+    const had = await toolsOfThread(path);
+    if (!had) return;
+    const missing = appToolsFor(this.host.reviewing)
+      .map((tool) => tool.name)
+      .filter((name) => !had.includes(name));
+    if (missing.length === 0) return;
+    this.host.notice(
+      "warning",
+      `This Codex thread started without ${missing.join(", ")}. Codex keeps the tools a thread started with, so its agent can't use them here. A new thread has them.`,
+    );
   }
 
   // Route
