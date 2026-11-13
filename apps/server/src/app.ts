@@ -1146,13 +1146,6 @@ export class App implements ThreadContext {
     });
     const items = history.main.finish();
     if (items.length === 1) throw new Error("That conversation has nothing in it yet.");
-    // One whose folder is gone can't carry on, so it needs no copy to.
-    const resumeId =
-      mode === "same"
-        ? sessionId
-        : place.folderGone
-          ? undefined
-          : await provider.sessions.copy(sessionId, session.cwd);
     const project = place.project?.id
       ? this.project(place.project.id)
       : place.project && !place.folderGone
@@ -1205,6 +1198,14 @@ export class App implements ThreadContext {
       };
       return { thread: childThread, items: childItems };
     });
+    // The copy comes last, once all else is ready: it is made in the other app, and nothing here
+    // takes it away again. One whose folder is gone can't carry on, so it needs no copy.
+    const resumeId =
+      mode === "same"
+        ? sessionId
+        : place.folderGone
+          ? undefined
+          : await provider.sessions.copy(sessionId, session.cwd);
     this.store.transaction(() => {
       this.store.saveThread(thread);
       if (resumeId) {
