@@ -237,6 +237,30 @@ describe("bringing in a conversation from another app", { timeout: 30_000 }, () 
     );
   });
 
+  test("one from another app's worktree has that checkout, and the branch it is on", async () => {
+    const worktree = join(t.dir, "elsewhere");
+    t.git("worktree", "add", "-q", "-b", "feature", worktree);
+    hadConversation("s1", worktree);
+    hadConversation("s2", t.project.path);
+    const there = await bringIn("s1", "same");
+    const here = await bringIn("s2", "same");
+    expect(there.projectId).toBe(t.project.id);
+    expect(there.origin!.checkout).toEqual({ path: worktree, branch: "feature" });
+    expect(here.origin!.checkout).toBeUndefined();
+
+    t.agent.worker = () => {
+      t.git("-C", worktree, "switch", "-q", "-c", "other");
+    };
+    const message = { text: "Branch off", images: [] };
+    await t.call("thread.send", { threadId: there.id, message });
+    await eventually(async () => {
+      expect((await t.thread(there.id)).origin!.checkout).toEqual({
+        path: worktree,
+        branch: "other",
+      });
+    });
+  });
+
   test("its images are kept once it is brought in, and not when that fails", async () => {
     hadConversation("s1", t.project.path, { image: PNG });
     t.agent.copyFails = true;

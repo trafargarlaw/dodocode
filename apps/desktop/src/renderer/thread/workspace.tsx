@@ -135,7 +135,19 @@ export function workspaceSlots({
   onModeChange: (mode: WorkspaceMode) => void;
 }): { where?: ReactNode; branch?: ReactNode } {
   const git = project?.git;
-  if (!project || !git || thread.kind !== "main") return {};
+  if (!project || thread.kind !== "main") return {};
+  const origin = thread.origin;
+  if (origin?.checkout) {
+    return {
+      where: (
+        <Fact icon={GitForkIcon} tip={`Where it worked in ${origin.app}: ${origin.checkout.path}`}>
+          Other checkout
+        </Fact>
+      ),
+      branch: <WorkspaceChip thread={thread} project={project} />,
+    };
+  }
+  if (!git) return {};
   const worktree = thread.worktree;
   if (worktree?.mergedAt !== undefined) {
     const base = worktree.base ?? "its branch";
@@ -184,7 +196,10 @@ export function StartBranch({ branch, mode }: { branch: string | undefined; mode
 function WorkspaceChip({ thread, project }: { thread: Thread; project: Project }) {
   const [open, setOpen] = useState(false);
   const worktree = thread.worktree;
-  const label = worktree ? worktree.branch : (project.git?.branch ?? "Detached HEAD");
+  const checkout = thread.origin?.checkout;
+  const label = worktree
+    ? worktree.branch
+    : ((checkout ? checkout.branch : project.git?.branch) ?? "Detached HEAD");
   const changed = worktree?.changed;
   return (
     <>
@@ -265,7 +280,9 @@ function ChangesPanel({
         <SheetDescription>
           {worktree
             ? `On ${worktree.branch}, against ${worktree.base ?? "the commit it started from"}. Commits and edits not yet committed both count.`
-            : `In ${project.name}, on ${branch}. This thread works in the project's folder, so your own edits show here too.`}
+            : thread.origin?.checkout
+              ? `In ${thread.origin.checkout.path}, on ${branch}, where it worked in ${thread.origin.app}. Edits made there outside this thread show here too.`
+              : `In ${project.name}, on ${branch}. This thread works in the project's folder, so your own edits show here too.`}
         </SheetDescription>
         {worktree && (
           <p

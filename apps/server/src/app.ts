@@ -75,7 +75,7 @@ import {
   type ReviewBrief,
   undecided,
 } from "./review";
-import { carriedModel, type Checkout, placeFor, projectHolding } from "./sessions";
+import { carriedModel, type Checkout, placeFor, projectHolding, samePath } from "./sessions";
 import { Store, type StoredAttachment } from "./store";
 import { itemFrom, merged, moved, promoted, reopened, split, todoTask } from "./tasks";
 import { ThreadRuntime, type ThreadContext, type ThreadMessage } from "./thread";
@@ -245,6 +245,7 @@ export class App implements ThreadContext {
     }
     if (item?.type === "turn_end") {
       this.inBackground(() => this.countWork(item.threadId));
+      this.inBackground(() => this.followCheckout(item.threadId));
       // After the turn has ended, so what this writes comes after it.
       const status = item.status;
       setImmediate(() => this.inBackground(() => this.reviewEnded(item.threadId, status)));
@@ -831,6 +832,21 @@ export class App implements ThreadContext {
     );
   }
 
+  /**
+   * Reads the branch again, after a turn, for a thread brought in from another app's checkout:
+   * its agent may have switched it.
+   */
+  private async followCheckout(threadId: string): Promise<void> {
+    const was = this.threads.get(threadId)?.origin?.checkout;
+    if (!was || !existsSync(was.path)) return;
+    const branch = (await repoOf(was.path).catch(() => undefined))?.branch;
+    const runtime = this.runtimes.get(threadId);
+    const origin = runtime?.thread.origin;
+    if (!runtime || !origin?.checkout || origin.checkout.branch === branch) return;
+    const checkout = { path: origin.checkout.path, ...(branch ? { branch } : {}) };
+    runtime.replace({ ...runtime.thread, origin: { ...origin, checkout } });
+  }
+
   /** Counts what a thread's work changed in its worktree, after a turn. */
   private async countWork(threadId: string): Promise<void> {
     const thread = this.threads.get(threadId);
@@ -1168,6 +1184,8 @@ export class App implements ThreadContext {
       : place.project && !place.folderGone
         ? await this.addProject(place.project.path)
         : undefined;
+    const checkout =
+      project && !place.folderGone ? await otherCheckout(session.cwd, project.path) : undefined;
     const carried = carriedModel(
       this.providerInfo.get(providerId)?.models ?? [],
       read.model,
@@ -1194,6 +1212,7 @@ export class App implements ThreadContext {
         cwd: session.cwd,
         mode,
         ...(place.folderGone ? { folderGone: true } : {}),
+        ...(checkout ? { checkout } : {}),
         broughtAt: now,
       },
     };
@@ -1662,6 +1681,21 @@ async function checkoutOf(folder: string): Promise<Checkout | undefined> {
   if (!repo) return undefined;
   const main = await mainCheckout(folder).catch(() => undefined);
   return { root: repo.root, main: main ?? repo.root };
+}
+
+/**
+ * The checkout a folder is in, when that isn't the checkout of the project it went in: a
+ * worktree the other app made, or a repository inside a project folder that isn't one.
+ */
+async function otherCheckout(
+  folder: string,
+  projectPath: string,
+): Promise<ThreadOrigin["checkout"]> {
+  const there = await repoOf(folder).catch(() => undefined);
+  if (!there) return undefined;
+  const here = await repoOf(projectPath).catch(() => undefined);
+  if (here && samePath(here.root, there.root)) return undefined;
+  return { path: there.root, ...(there.branch ? { branch: there.branch } : {}) };
 }
 
 /** What a client knows an attachment by. */

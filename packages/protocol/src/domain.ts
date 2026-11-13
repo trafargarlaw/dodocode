@@ -267,6 +267,11 @@ export interface ThreadOrigin {
    * never carries on, though the folder comes back.
    */
   folderGone?: boolean;
+  /**
+   * The checkout the folder is in, when that isn't the project folder's checkout, as with a
+   * worktree the other app made. The server keeps its branch current after each turn.
+   */
+  checkout?: { path: string; branch?: string };
   /** When it was brought in. */
   broughtAt: number;
 }
