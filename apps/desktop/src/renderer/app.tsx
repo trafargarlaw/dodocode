@@ -239,7 +239,7 @@ function TitleBar({
             >
               {/* While the theme is open, its keys are the only ones that run. */}
               <HotkeysProvider scope="theme" exclusive enabled={themeOpen}>
-                <ThemePanel onClose={() => onThemeOpenChange(false)} />
+                <ThemePanel open={themeOpen} onClose={() => onThemeOpenChange(false)} />
               </HotkeysProvider>
             </PopoverContent>
           </Popover>
@@ -274,7 +274,7 @@ function TitleButton({ className, ...props }: ComponentProps<typeof Button>) {
   );
 }
 
-function ThemePanel({ onClose }: { onClose: () => void }) {
+function ThemePanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const hotkeys = useAppHotkeys();
   const format = useFormatForDisplay();
   const previous = hotkeys["theme.previousPreset"];
@@ -287,6 +287,7 @@ function ThemePanel({ onClose }: { onClose: () => void }) {
 
   return (
     <ThemePicker
+      open={open}
       keys={{
         previousPreset: previous.hotkey ? format(previous.hotkey) : undefined,
         nextPreset: next.hotkey ? format(next.hotkey) : undefined,

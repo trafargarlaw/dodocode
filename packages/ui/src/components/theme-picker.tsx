@@ -55,10 +55,13 @@ const pageOf = (preset: Preset | undefined) =>
 export function ThemePicker({
   className,
   keys,
+  open = true,
 }: {
   className?: string;
   /** Labels for the keys that step through the presets, shown in their buttons' tooltips. */
   keys?: { previousPreset?: string; nextPreset?: string };
+  /** False while the picker is kept, hidden, to open again quickly. It draws nothing then. */
+  open?: boolean;
 }) {
   const { settings, theme } = useTheme();
   const preset = findPreset(settings);
@@ -68,6 +71,13 @@ export function ThemePicker({
   if (preset !== shownPreset) {
     setShownPreset(preset);
     setPage((current) => pageOf(preset) ?? current);
+  }
+  // It opens on the chosen preset's page, as it did when each opening built it afresh, not on
+  // the page it was left at.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setPage(pageOf(preset) ?? 0);
   }
   const count = settings.colors.length;
 
@@ -137,7 +147,7 @@ export function ThemePicker({
         </div>
       </div>
 
-      <ColorField settings={settings} scheme={theme.scheme} onChange={setColors} />
+      <ColorField settings={settings} scheme={theme.scheme} open={open} onChange={setColors} />
 
       <div>
         <div className="flex items-center gap-1">
@@ -272,19 +282,28 @@ export function setAppearance(appearance: Appearance): void {
 function ColorField({
   settings,
   scheme,
+  open,
   onChange,
 }: {
   settings: ThemeSettings;
   scheme: ColorScheme;
+  open: boolean;
   onChange: (colors: readonly WallpaperColor[]) => void;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   // The colour being dragged, and every colour as it was when the drag started.
   const drag = useRef<Drag | null>(null);
+  // The field drawn last. A hidden picker draws none, and draws on opening only what changed.
+  const drawn = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    canvas.current?.getContext("2d")?.putImageData(fieldImage(scheme, settings.intensity), 0, 0);
-  }, [scheme, settings.intensity]);
+    const field = `${scheme} ${settings.intensity}`;
+    if (!open || drawn.current === field) return;
+    const context = canvas.current?.getContext("2d");
+    if (!context) return;
+    context.putImageData(fieldImage(scheme, settings.intensity), 0, 0);
+    drawn.current = field;
+  }, [scheme, settings.intensity, open]);
 
   const moveTo = (event: PointerEvent<HTMLDivElement>, { index, start }: Drag) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -326,11 +345,14 @@ function ColorField({
         event.currentTarget.setPointerCapture(event.pointerId);
         if (!handle) moveTo(event, current);
       }}
+      // A drag lasts while the field holds the pointer. The field lets go of it on a pointerup or
+      // a cancel, and without either when the picker closes mid-drag: a move after that is no drag.
       onPointerMove={(event) => {
-        if (drag.current) moveTo(event, drag.current);
+        if (drag.current && event.currentTarget.hasPointerCapture(event.pointerId)) {
+          moveTo(event, drag.current);
+        }
       }}
-      onPointerUp={() => (drag.current = null)}
-      onPointerCancel={() => (drag.current = null)}
+      onLostPointerCapture={() => (drag.current = null)}
     >
       <canvas
         ref={canvas}
