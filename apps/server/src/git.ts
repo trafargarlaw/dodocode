@@ -71,20 +71,23 @@ export interface Repo {
   head?: string;
 }
 
+const BRANCH_REF = "refs/heads/";
+
 /** The repository a folder is in, or nothing when it isn't in one. */
 export async function repoOf(folder: string): Promise<Repo | undefined> {
   if (!existsSync(folder)) return undefined;
   // One git asks it all: on Windows, starting a process holds up the server for several
   // milliseconds, and the server asks this of every project as it starts. The commit comes
-  // before `--abbrev-ref`, which names the branch for every HEAD after it, or prints HEAD when
-  // none is checked out.
+  // before `--symbolic-full-name`, which names the branch's ref for every HEAD after it, or
+  // prints HEAD when none is checked out. Not `--abbrev-ref`: it calls a branch `heads/main`
+  // when a tag or a remote shares its name.
   const where = await run(folder, [
     "rev-parse",
     "--show-toplevel",
     "--absolute-git-dir",
     "--show-prefix",
     "HEAD",
-    "--abbrev-ref",
+    "--symbolic-full-name",
     "HEAD",
   ]);
   const [root = "", gitDir = "", prefix = "", head = "", ref = ""] = where.stdout.split(/\r?\n/);
@@ -97,7 +100,7 @@ export async function repoOf(folder: string): Promise<Repo | undefined> {
     if (branch.code === 0 && branch.stdout.trim()) repo.branch = branch.stdout.trim();
     return repo;
   }
-  if (ref && ref !== "HEAD") repo.branch = ref;
+  if (ref.startsWith(BRANCH_REF)) repo.branch = ref.slice(BRANCH_REF.length);
   if (head) repo.head = head;
   return repo;
 }

@@ -114,18 +114,26 @@ describe("worktrees", () => {
   });
 
   test("a folder's repository: where it is, the branch checked out and the commit", async () => {
+    // A repository of its own, so its worktrees and tag stay out of the other tests.
+    const repo = join(dir, "where");
+    git(dir, "init", "-q", "-b", "main", repo);
+    write(repo, "a.txt", "one\n");
+    git(repo, "add", "--all");
+    git(repo, "commit", "-q", "-m", "start");
+    // A tag named as the branch: a short name for the branch would have to tell the two apart.
+    git(repo, "tag", "main");
     const plain = join(dir, "plain");
     const empty = join(dir, "empty");
-    const sub = join(project, "sub");
-    const detached = join(dir, "detached");
-    const side = join(dir, "side");
+    const sub = join(repo, "sub");
+    const detached = join(dir, "where-detached");
+    const side = join(dir, "where-side");
     mkdirSync(plain);
     mkdirSync(sub);
     git(dir, "init", "-q", "-b", "main", empty);
-    git(project, "worktree", "add", "-q", "--detach", detached);
-    await addWorktree(project, side, "side");
-    const head = git(project, "rev-parse", "HEAD");
-    const gitDir = join(project, ".git");
+    git(repo, "worktree", "add", "-q", "--detach", detached);
+    await addWorktree(repo, side, "side");
+    const head = git(repo, "rev-parse", "HEAD");
+    const gitDir = join(repo, ".git");
 
     expect(await repoOf(plain)).toBeUndefined();
     expect(await repoOf(empty)).toEqual({
@@ -135,7 +143,7 @@ describe("worktrees", () => {
       branch: "main",
     });
     expect(await repoOf(sub)).toEqual({
-      root: project,
+      root: repo,
       gitDir,
       prefix: "sub/",
       branch: "main",
@@ -143,7 +151,7 @@ describe("worktrees", () => {
     });
     expect(await repoOf(detached)).toEqual({
       root: detached,
-      gitDir: join(gitDir, "worktrees", "detached"),
+      gitDir: join(gitDir, "worktrees", "where-detached"),
       prefix: "",
       head,
     });
