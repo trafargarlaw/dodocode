@@ -75,7 +75,7 @@ import {
   type ReviewBrief,
   undecided,
 } from "./review";
-import { carriedModel, type Checkout, placeFor, projectHolding, samePath } from "./sessions";
+import { carriedModel, type Checkout, placeFor, projectAt, samePath } from "./sessions";
 import { Store, type StoredAttachment } from "./store";
 import { itemFrom, merged, moved, promoted, reopened, split, todoTask } from "./tasks";
 import { ThreadRuntime, type ThreadContext, type ThreadMessage } from "./thread";
@@ -1126,8 +1126,8 @@ export class App implements ThreadContext {
   private async placeOf(cwd: string): Promise<SessionPlace> {
     const projects = [...this.projects.values()];
     if (!existsSync(cwd)) {
-      const holding = projectHolding(projects, cwd);
-      return { ...(holding ? known(holding) : {}), folderGone: true };
+      const at = projectAt(projects, cwd);
+      return { ...(at ? known(at) : {}), folderGone: true };
     }
     const placing = placeFor(projects, cwd, await checkoutOf(cwd));
     if (!placing) return {};

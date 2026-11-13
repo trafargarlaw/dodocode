@@ -42,12 +42,24 @@ export interface Checkout {
 /** Where a conversation goes: in a project there is, in a folder added as one, or in none. */
 export type Placing = { project: Project } | { add: string } | undefined;
 
+/** The project whose folder `path` is. */
+export function projectAt(
+  projects: Iterable<Project>,
+  path: string,
+  platform = process.platform,
+): Project | undefined {
+  for (const project of projects) if (samePath(project.path, path, platform)) return project;
+  return undefined;
+}
+
 /**
- * The project a conversation goes in, by the folder it worked in:
+ * The project a conversation goes in, by the folder it worked in. A project takes what was
+ * started in its own folder or its own repository, never in another folder or repository
+ * inside it:
  * 1. the nearest project in the same checkout that holds the folder;
  * 2. in a worktree, the project that holds the same folder in the main checkout, so another
  *    app's worktree goes with its repository's project;
- * 3. the nearest project that holds the folder from outside its checkout;
+ * 3. the project whose folder it is;
  * 4. otherwise a new project: the repository's main checkout or, outside one, the folder.
  *    Never the home folder, a folder that holds it, or a drive's root. Those hold so much that
  *    every conversation after would go in them.
@@ -68,7 +80,7 @@ export function placeFor(
   const found =
     (checkout && inside(checkout.root, cwd)) ??
     (checkout && inside(checkout.main, join(checkout.main, relative(checkout.root, cwd)))) ??
-    projectHolding(projects, cwd, platform);
+    projectAt(projects, cwd, platform);
   if (found) return { project: found };
   const folder = checkout?.main ?? cwd;
   const root = parse(resolve(folder)).root === resolve(folder);
