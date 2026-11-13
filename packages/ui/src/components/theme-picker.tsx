@@ -282,23 +282,8 @@ function ColorField({
   // The colour being dragged, and every colour as it was when the drag started.
   const drag = useRef<Drag | null>(null);
 
-  // Draw every colour the wallpaper can take, as it will look: hue around, strength outwards.
   useEffect(() => {
-    const context = canvas.current?.getContext("2d");
-    if (!context) return;
-    const { width, height } = context.canvas;
-    const image = context.createImageData(width, height);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const color = wallpaperColor(
-          pointToColor((x + 0.5) / width, (y + 0.5) / height),
-          settings.intensity,
-          scheme,
-        );
-        image.data.set([...color, 255], (y * width + x) * 4);
-      }
-    }
-    context.putImageData(image, 0, 0);
+    canvas.current?.getContext("2d")?.putImageData(fieldImage(scheme, settings.intensity), 0, 0);
   }, [scheme, settings.intensity]);
 
   const moveTo = (event: PointerEvent<HTMLDivElement>, { index, start }: Drag) => {
@@ -347,7 +332,12 @@ function ColorField({
       onPointerUp={() => (drag.current = null)}
       onPointerCancel={() => (drag.current = null)}
     >
-      <canvas ref={canvas} width={138} height={88} className="absolute inset-0 size-full" />
+      <canvas
+        ref={canvas}
+        width={FIELD_WIDTH}
+        height={FIELD_HEIGHT}
+        className="absolute inset-0 size-full"
+      />
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 text-foreground opacity-[0.08]"
@@ -389,6 +379,42 @@ function ColorField({
 interface Drag {
   index: number;
   start: readonly WallpaperColor[];
+}
+
+// Every pixel costs a gamut search, and the field is a smooth blend: it is worked out at a quarter
+// of its width and height on screen, and stretched.
+const FIELD_WIDTH = 69;
+const FIELD_HEIGHT = 44;
+// Fields already drawn, so reopening the picker or stepping the intensity back draws nothing.
+const fields = new Map<string, ImageData>();
+const KEPT_FIELDS = 8;
+
+/** Every colour the wallpaper can take, as it will look: hue around, strength outwards. */
+function fieldImage(scheme: ColorScheme, intensity: number): ImageData {
+  const key = `${scheme} ${intensity}`;
+  const kept = fields.get(key);
+  if (kept) {
+    // Map order is age: move this one to the young end.
+    fields.delete(key);
+    fields.set(key, kept);
+    return kept;
+  }
+  const image = new ImageData(FIELD_WIDTH, FIELD_HEIGHT);
+  let i = 0;
+  for (let y = 0; y < FIELD_HEIGHT; y++) {
+    for (let x = 0; x < FIELD_WIDTH; x++) {
+      const point = pointToColor((x + 0.5) / FIELD_WIDTH, (y + 0.5) / FIELD_HEIGHT);
+      const [red, green, blue] = wallpaperColor(point, intensity, scheme);
+      image.data[i++] = red;
+      image.data[i++] = green;
+      image.data[i++] = blue;
+      image.data[i++] = 255;
+    }
+  }
+  fields.set(key, image);
+  const oldest = fields.keys().next();
+  if (fields.size > KEPT_FIELDS && !oldest.done) fields.delete(oldest.value);
+  return image;
 }
 
 /** A point in the field, from 0 to 1 on each axis, as a colour: hue around, strength outwards. */

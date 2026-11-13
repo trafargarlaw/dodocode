@@ -195,6 +195,10 @@ function TitleBar({
 }) {
   const hotkeys = useAppHotkeys();
   const sidebarLabel = sidebarOpen ? "Hide the sidebar" : "Show the sidebar";
+  // The theme is built the first time it opens and kept, hidden, after it closes: building it
+  // is most of what opening it costs.
+  const [themeBuilt, setThemeBuilt] = useState(false);
+  if (themeOpen && !themeBuilt) setThemeBuilt(true);
 
   return (
     <header className="grid grid-cols-[1fr_auto_1fr] items-center [-webkit-app-region:drag]">
@@ -227,13 +231,14 @@ function TitleBar({
               </PopoverTrigger>
             </Tip>
             <PopoverContent
+              keepMounted={themeBuilt}
               side="bottom"
               align="start"
               sideOffset={8}
               className="w-75 rounded-2xl p-3"
             >
               {/* While the theme is open, its keys are the only ones that run. */}
-              <HotkeysProvider scope="theme" exclusive>
+              <HotkeysProvider scope="theme" exclusive enabled={themeOpen}>
                 <ThemePanel onClose={() => onThemeOpenChange(false)} />
               </HotkeysProvider>
             </PopoverContent>
