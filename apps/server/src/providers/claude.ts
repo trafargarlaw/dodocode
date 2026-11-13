@@ -29,7 +29,7 @@ import type {
 
 import { AsyncQueue, errorText, log, newId, within } from "../util";
 import { appInstructions, appToolsFor } from "./app-tools";
-import { Transcript, type TranscriptHooks } from "./claude-transcript";
+import { compactNotice, Transcript, type TranscriptHooks } from "./claude-transcript";
 import { APP_SERVER, APP_TOOLS, changesForInput, describeTool, relativePath } from "./claude-tools";
 import { agentEnv, findOnPath, HOME_BIN } from "./env";
 import type {
@@ -536,19 +536,7 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
         const meta = event.compact_metadata as
           | { trigger?: string; pre_tokens?: number; post_tokens?: number }
           | undefined;
-        const k = (tokens: number) => `${Math.round(tokens / 1000)}k`;
-        const how =
-          meta?.trigger === "auto"
-            ? "Compacted the conversation by itself"
-            : "Compacted the conversation";
-        this.host.notice(
-          "info",
-          meta?.pre_tokens && meta.post_tokens
-            ? `${how}, from ${k(meta.pre_tokens)} to ${k(meta.post_tokens)} tokens.`
-            : meta?.pre_tokens
-              ? `${how} (${k(meta.pre_tokens)} tokens before).`
-              : `${how}.`,
-        );
+        this.host.notice("info", compactNotice(meta?.trigger, meta?.pre_tokens, meta?.post_tokens));
         this.compacting = false;
         this.host.contextUsed({
           compacting: false,
@@ -747,6 +735,10 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
 
   keepImage(data: string, mime: string): ImageRef | undefined {
     return this.host.keepImage(data, mime);
+  }
+
+  now(): number {
+    return Date.now();
   }
 
   // Context and commands

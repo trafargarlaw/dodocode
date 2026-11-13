@@ -18,6 +18,19 @@ export interface TranscriptHooks {
   toolDenied(toolId: string): boolean;
   /** Keeps an image a tool gave back, base64 encoded. */
   keepImage(data: string, mime: string): ImageRef | undefined;
+  /** The time now: the clock's, live, or the line's, for a conversation read from its file. */
+  now(): number;
+}
+
+const k = (tokens: number) => `${Math.round(tokens / 1000)}k`;
+
+/** What shows where Claude compacted the conversation. */
+export function compactNotice(trigger?: string, preTokens?: number, postTokens?: number): string {
+  const how =
+    trigger === "auto" ? "Compacted the conversation by itself" : "Compacted the conversation";
+  if (preTokens && postTokens) return `${how}, from ${k(preTokens)} to ${k(postTokens)} tokens.`;
+  if (preTokens) return `${how} (${k(preTokens)} tokens before).`;
+  return `${how}.`;
 }
 
 interface Block {
@@ -206,7 +219,7 @@ export class Transcript {
           break;
         case "web_search_tool_result":
           if (block.tool_use_id) {
-            this.writer.update(block.tool_use_id, { status: "done", endedAt: Date.now() });
+            this.writer.update(block.tool_use_id, { status: "done", endedAt: this.hooks.now() });
           }
           break;
         default:
@@ -290,7 +303,7 @@ export class Transcript {
       output,
       status,
       background: background || undefined,
-      endedAt: background ? undefined : Date.now(),
+      endedAt: background ? undefined : this.hooks.now(),
       exitCode: typeof result.exitCode === "number" ? result.exitCode : undefined,
       images: images.length > 0 ? images : undefined,
       changes:

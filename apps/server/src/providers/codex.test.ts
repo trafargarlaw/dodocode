@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { shownCommand } from "./codex";
+import { shownCommand } from "./codex-items";
 
 test.each([
   [
