@@ -57,18 +57,7 @@ test("a thread saved before costs were kept still resumes its sessions", () => {
 test("the sessions threads pick up stay dodocode's once the threads go, but for one from another app", () => {
   const store = new Store(":memory:");
   for (const id of ["a", "b"]) store.saveThread(thread(id));
-  // Brought in from another app, it carries on that same conversation.
-  store.saveThread({
-    ...thread("c"),
-    origin: {
-      provider: "claude",
-      app: "Claude Code",
-      sessionId: "o1",
-      cwd: "/work",
-      mode: "same",
-      broughtAt: 0,
-    },
-  });
+  store.saveThread(carryingOn("c", "o1"));
   store.saveResumePoints("a", { claude: "s1" } as unknown as ResumePoints);
   store.saveResumePoints("b", { claude: { id: "s2", costUsd: 0.5 }, codex: { id: "c1" } });
   store.saveResumePoints("c", { claude: { id: "o1" } });
@@ -83,3 +72,33 @@ test("the sessions threads pick up stay dodocode's once the threads go, but for 
   store.deleteThread("c");
   expect([...store.ownSessions()].toSorted()).toEqual(["claude:s1", "claude:s2", "codex:c1"]);
 });
+
+test("the sessions a thread lets go of stay dodocode's, but for one from another app", () => {
+  const store = new Store(":memory:");
+  store.saveThread(thread("a"));
+  store.saveThread(carryingOn("c", "o1"));
+  store.saveResumePoints("a", { claude: { id: "s1" }, codex: { id: "c1" } });
+  store.saveResumePoints("c", { claude: { id: "o1" } });
+  // A new Claude session, its cost as it goes up, then none at all, as after a merge.
+  store.saveResumePoints("a", { claude: { id: "s2" }, codex: { id: "c1" } });
+  store.saveResumePoints("a", { claude: { id: "s2", costUsd: 0.5 }, codex: { id: "c1" } });
+  store.saveResumePoints("a", {});
+  store.saveResumePoints("c", {});
+
+  expect([...store.ownSessions()].toSorted()).toEqual(["claude:s1", "claude:s2", "codex:c1"]);
+});
+
+/** A thread brought in from Claude Code that carries on the same conversation, `sessionId`. */
+function carryingOn(id: string, sessionId: string): Thread {
+  return {
+    ...thread(id),
+    origin: {
+      provider: "claude",
+      app: "Claude Code",
+      sessionId,
+      cwd: "/work",
+      mode: "same",
+      broughtAt: 0,
+    },
+  };
+}
