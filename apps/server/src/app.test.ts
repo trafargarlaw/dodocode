@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { Thread } from "@dodocode/protocol";
 
-import { testApp, type FakeConversation, type TestApp } from "./test-app";
+import { testApp, type FakeConversation, type FakeTurn, type TestApp } from "./test-app";
 
 let t: TestApp;
 
@@ -192,6 +192,36 @@ function hadConversation(id: string, cwd: string, extra: Partial<FakeConversatio
 function bringIn(sessionId: string, mode: "same" | "copy"): Promise<Thread> {
   return t.call("sessions.import", { provider: "claude", sessionId, mode });
 }
+
+/** A turn in which the agent edits one file, named as a provider names it. */
+function editing(path: string): FakeTurn {
+  return (host) => {
+    host.items.add({
+      type: "tool",
+      kind: "edit",
+      name: "Edit",
+      title: path,
+      input: {},
+      output: "",
+      status: "done",
+      changes: [{ path, kind: "update" }],
+    });
+  };
+}
+
+describe("a chat that changes files", { timeout: 30_000 }, () => {
+  test("becomes a task for a file in its folder, not for one outside it", async () => {
+    const message = { text: "Note what you learned", images: [] };
+    // Such as the agent's own memory, in the person's home folder.
+    t.agent.worker = editing(join(t.dir, "memory", "notes.md"));
+    const chat = await t.call("thread.create", { projectId: t.project.id, message });
+    expect((await idle(chat.id)).task).toBeUndefined();
+
+    t.agent.worker = editing("a.txt");
+    await t.call("thread.send", { threadId: chat.id, message });
+    expect((await idle(chat.id)).task?.status).toBe("progress");
+  });
+});
 
 /** The conversations "Bring in" lists, and which of them are threads already. */
 async function listed(): Promise<string[]> {

@@ -32,6 +32,7 @@ import type {
   Thread,
   ThreadOrigin,
   ThreadSettings,
+  ToolItem,
   WorkspaceMode,
   Worktree,
 } from "@dodocode/protocol";
@@ -75,7 +76,7 @@ import {
   type ReviewBrief,
   undecided,
 } from "./review";
-import { carriedModel, type Checkout, placeFor, projectAt, samePath } from "./sessions";
+import { carriedModel, type Checkout, holds, placeFor, projectAt, samePath } from "./sessions";
 import { Store, type StoredAttachment } from "./store";
 import { itemFrom, merged, moved, promoted, reopened, split, todoTask } from "./tasks";
 import { ThreadRuntime, type ThreadContext, type ThreadMessage } from "./thread";
@@ -241,7 +242,7 @@ export class App implements ThreadContext {
     }
     const item = event.type === "item" ? event.item : undefined;
     if (item?.type === "tool" && item.kind === "edit" && item.status === "done") {
-      this.filesChanged(item.threadId);
+      this.filesChanged(item);
     }
     if (item?.type === "turn_end") {
       this.inBackground(() => this.countWork(item.threadId));
@@ -253,11 +254,11 @@ export class App implements ThreadContext {
   }
 
   /**
-   * A chat whose agent, or one of its subagents, changed files becomes a task. A task in review
-   * goes back to In progress: its work changed after it was put there.
+   * A chat whose agent, or one of its subagents, changed files in the folder it works in becomes
+   * a task. A task in review goes back to In progress: its work changed after it was put there.
    */
-  private filesChanged(threadId: string): void {
-    let root = this.threads.get(threadId);
+  private filesChanged(edit: ToolItem): void {
+    let root = this.threads.get(edit.threadId);
     while (root?.parentId) {
       // A reviewer only reads; whatever it ran changes nothing about the task.
       if (root.kind === "review") return;
@@ -267,15 +268,28 @@ export class App implements ThreadContext {
     const runtime = this.runtime(root.id);
     const now = Date.now();
     const back = reopened(runtime.thread, now);
-    if (back) {
-      runtime.replace(back);
-      runtime.note("Changed files while in review, so it's back in In progress.");
-      return;
-    }
-    const next = promoted(runtime.thread, now);
-    if (!next) return;
+    const next = back ?? promoted(runtime.thread, now);
+    if (!next || !this.editsWork(root, edit)) return;
     runtime.replace(next);
-    runtime.note("Changed files, so this chat became a task.");
+    runtime.note(
+      back
+        ? "Changed files while in review, so it's back in In progress."
+        : "Changed files, so this chat became a task.",
+    );
+  }
+
+  /**
+   * Whether an edit changed a file in the folder a thread works in. A file elsewhere, such as
+   * the agent's own memory, is no part of the work. An edit that names no file counts.
+   */
+  private editsWork(root: Thread, edit: ToolItem): boolean {
+    const paths = (edit.changes ?? []).flatMap((change) =>
+      change.movedTo ? [change.path, change.movedTo] : [change.path],
+    );
+    if (!paths.length) return true;
+    const folder = this.workDir(root);
+    // Providers name a file in the folder from it, and one outside it in full.
+    return paths.some((path) => holds(folder, resolve(folder, path)));
   }
 
   /**
