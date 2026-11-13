@@ -54,11 +54,32 @@ test("a thread saved before costs were kept still resumes its sessions", () => {
   });
 });
 
-test("the sessions threads pick up are known by provider and id, however they were saved", () => {
+test("the sessions threads pick up stay dodocode's once the threads go, but for one from another app", () => {
   const store = new Store(":memory:");
-  for (const id of ["a", "b", "c"]) store.saveThread(thread(id));
+  for (const id of ["a", "b"]) store.saveThread(thread(id));
+  // Brought in from another app, it carries on that same conversation.
+  store.saveThread({
+    ...thread("c"),
+    origin: {
+      provider: "claude",
+      app: "Claude Code",
+      sessionId: "o1",
+      cwd: "/work",
+      mode: "same",
+      broughtAt: 0,
+    },
+  });
   store.saveResumePoints("a", { claude: "s1" } as unknown as ResumePoints);
   store.saveResumePoints("b", { claude: { id: "s2", costUsd: 0.5 }, codex: { id: "c1" } });
+  store.saveResumePoints("c", { claude: { id: "o1" } });
+  expect([...store.ownSessions()].toSorted()).toEqual([
+    "claude:o1",
+    "claude:s1",
+    "claude:s2",
+    "codex:c1",
+  ]);
 
-  expect([...store.resumedSessions()].toSorted()).toEqual(["claude:s1", "claude:s2", "codex:c1"]);
+  store.deleteThread("b");
+  store.deleteThread("c");
+  expect([...store.ownSessions()].toSorted()).toEqual(["claude:s1", "claude:s2", "codex:c1"]);
 });
