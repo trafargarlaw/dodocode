@@ -12,6 +12,7 @@
 
 // Tests run the modules that import this one without a window, and record nothing.
 const tracing = typeof window !== "undefined" && window.dodocode.tracing;
+const isMac = typeof window !== "undefined" && window.dodocode.platform === "darwin";
 
 const done = () => {};
 
@@ -28,11 +29,37 @@ export function startSpan(name: string): () => void {
   return () => measure(name, start);
 }
 
-/** Like `startSpan`, but the span ends once the next frame is drawn, so it covers rendering. */
+/**
+ * Like `startSpan`, but the span ends once the next frame is drawn, so it covers rendering. A
+ * hidden window draws no frames, so a span it was hidden across is left out: it would time how
+ * long the window stayed hidden.
+ */
 export function startShownSpan(name: string): () => void {
   if (!tracing) return done;
   const start = performance.now();
-  return () => afterNextFrame(() => measure(name, start));
+  const before = hides;
+  const hidden = hiddenAfterShowing();
+  return () =>
+    afterNextFrame(() => {
+      if (!hidden && hides === before) measure(name, start);
+    });
+}
+
+/** How many times the window was hidden, by minimizing it or switching away. */
+let hides = 0;
+
+/**
+ * Whether the window is hidden now, having shown. It is hidden too before it first shows, at
+ * launch, but it draws its frames then.
+ */
+function hiddenAfterShowing(): boolean {
+  return document.hidden && hides > 0;
+}
+
+if (tracing) {
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) hides += 1;
+  });
 }
 
 let started = false;
@@ -84,19 +111,20 @@ type KeyPress = Pick<
 >;
 
 /** The key and its modifiers (`Ctrl+K`, `Shift+Enter`), or nothing for a key that types text. */
-export function shortcut(event: KeyPress): string | undefined {
-  // AltGr types characters, and Windows reports it as Ctrl+Alt.
+export function shortcut(event: KeyPress, mac = isMac): string | undefined {
+  const printable = event.key.length === 1;
+  // AltGr types characters, and Windows reports it as Ctrl+Alt. On a Mac, Option types them.
   const typing =
     event.isComposing ||
     event.key === "Process" ||
     event.key === "Dead" ||
-    event.getModifierState("AltGraph");
+    event.getModifierState("AltGraph") ||
+    (mac && printable && event.altKey && !event.ctrlKey && !event.metaKey);
   if (typing) return undefined;
   const mods: string[] = [];
   if (event.ctrlKey) mods.push("Ctrl");
   if (event.metaKey) mods.push("Meta");
   if (event.altKey) mods.push("Alt");
-  const printable = event.key.length === 1;
   if (printable && mods.length === 0) return undefined;
   if (event.shiftKey && !printable) mods.push("Shift");
   return [...mods, printable ? event.key.toUpperCase() : event.key].join("+");
@@ -104,6 +132,27 @@ export function shortcut(event: KeyPress): string | undefined {
 
 const CONTROL =
   "button, a[href], input, textarea, select, [role], [contenteditable=''], [contenteditable='true'], [data-slot]";
+/**
+ * The controls whose text is their name. Other roles hold the page's content in their text: a
+ * `log` holds the messages, a `dialog` or a `listbox` what is in it.
+ */
+const NAMED_BY_TEXT = [
+  "button",
+  "a[href]",
+  ...[
+    "button",
+    "link",
+    "tab",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "option",
+    "checkbox",
+    "radio",
+    "switch",
+    "treeitem",
+  ].map((role) => `[role=${role}]`),
+].join(", ");
 const LABEL_LENGTH = 40;
 
 /** The control an event landed on: its kind, and its label when it has one that is not typed text. */
@@ -132,7 +181,7 @@ function labelOf(element: Element): string {
     element instanceof HTMLInputElement ||
     element instanceof HTMLTextAreaElement ||
     (element instanceof HTMLElement && element.isContentEditable);
-  return element.matches("button, a[href], [role]") && !editable ? textStart(element) : "";
+  return element.matches(NAMED_BY_TEXT) && !editable ? textStart(element) : "";
 }
 
 /** The start of an element's text. It stops early: the timing counts the time spent here. */

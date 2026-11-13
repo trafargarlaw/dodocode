@@ -1,5 +1,5 @@
 // The dodocode server. The desktop app starts it as a utility process; it can also run alone:
-//   DODOCODE_DATA_DIR=... DODOCODE_TOKEN=... node --experimental-strip-types src/main.ts
+//   DODOCODE_DATA_DIR=... DODOCODE_TOKEN=... node --experimental-strip-types src/start.ts
 // It listens on 127.0.0.1 only, and every request must carry the token, except for the pages the
 // agent showed, which run sandboxed and must never see it.
 
@@ -13,7 +13,7 @@ import type { CallFrame, ServerEvent, ServerFrame } from "@dodocode/protocol";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { App, type Client } from "./app";
-import { startProfile, stopProfile } from "./profile";
+import { stopProfile } from "./profile";
 import { errorText, log } from "./util";
 import { PAGE_HEIGHT_SCRIPT } from "./web-files";
 
@@ -33,7 +33,6 @@ const requestedPort = Number(process.env.DODOCODE_PORT) || 0;
 const MAX_FRAME = 64 * 1024 * 1024;
 const HEARTBEAT_MS = 30_000;
 
-startProfile();
 mkdirSync(dataDir, { recursive: true });
 const app = new App(dataDir);
 app.start();
@@ -264,7 +263,8 @@ async function shutdown(reason: string): Promise<void> {
   clearInterval(heartbeat);
   for (const socket of sockets.clients) socket.close(1001, "The server is stopping.");
   server.close();
-  const forced = setTimeout(() => process.exit(0), 5000);
+  // A stop that hangs still ends the server, and still writes the profile.
+  const forced = setTimeout(() => void stopProfile().finally(() => process.exit(0)), 5000);
   try {
     await app.dispose();
   } catch (error) {

@@ -41,9 +41,20 @@ const CATEGORIES = [
   "latencyInfo",
 ];
 
+async function gpuStarted(): Promise<boolean> {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (app.getAppMetrics().some((m) => m.type === "GPU")) return true;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return false;
+}
+
 /** The trace buffer. A busy minute fills about 100 MB. */
 const BUFFER_KB = 400 * 1024;
 const READ_CHUNK = 4 * 1024 * 1024;
+/** How long a full buffer may take to come back once the recording ends. */
+const END_MS = 30_000;
 
 export interface TraceSettings {
   dir: string;
@@ -74,6 +85,11 @@ export class TraceRecorder {
     return join(this.settings.dir, `${this.run}.server.cpuprofile`);
   }
 
+  /** True until a window is given to record: only the first one is. */
+  get waiting(): boolean {
+    return !this.session && !this.finished;
+  }
+
   /**
    * Starts recording the window's trace. Call it before the window loads its page, so the trace
    * holds the whole launch. Only the first window is recorded.
@@ -82,6 +98,8 @@ export class TraceRecorder {
     if (this.session) return;
     const session = contents.debugger;
     this.session = session;
+    const gpu = await gpuStarted();
+    process.stderr.write(`[trace] gpu process ${gpu ? "running" : "not started"}\n`);
     try {
       session.attach("1.3");
       await session.sendCommand("Tracing.start", {
@@ -116,16 +134,37 @@ export class TraceRecorder {
     if (!session || this.finished) return;
     const path = join(this.settings.dir, `${this.run}.trace.json`);
     try {
-      const complete = new Promise<{ stream?: string; dataLossOccurred?: boolean }>((resolve) => {
-        const listen = (_event: unknown, method: string, params: Record<string, unknown>) => {
-          if (method !== "Tracing.tracingComplete") return;
-          session.off("message", listen);
-          resolve(params);
-        };
-        session.on("message", listen);
-      });
-      await session.sendCommand("Tracing.end");
-      const { stream, dataLossOccurred } = await complete;
+      // The trace comes back as an event after `Tracing.end`. It never comes when the page goes
+      // away first, and the window waits on it to close, so a page gone or a wait too long ends it.
+      const complete = new Promise<{ stream?: string; dataLossOccurred?: boolean }>(
+        (resolve, reject) => {
+          const done = () => {
+            clearTimeout(timer);
+            session.off("message", listen);
+            session.off("detach", detached);
+          };
+          const listen = (_event: unknown, method: string, params: Record<string, unknown>) => {
+            if (method !== "Tracing.tracingComplete") return;
+            done();
+            resolve(params);
+          };
+          const detached = (_event: unknown, reason: string) => {
+            done();
+            reject(new Error(`the page went away (${reason})`));
+          };
+          const timer = setTimeout(() => {
+            done();
+            reject(new Error(`the trace did not come back in ${END_MS / 1000} seconds`));
+          }, END_MS);
+          session.on("message", listen);
+          session.on("detach", detached);
+        },
+      );
+      // Together, so that `complete` failing while `Tracing.end` runs is caught here too.
+      const [, { stream, dataLossOccurred }] = await Promise.all([
+        session.sendCommand("Tracing.end"),
+        complete,
+      ]);
       if (!stream) throw new Error("the trace came back without its data");
       const file = createWriteStream(path);
       for (;;) {

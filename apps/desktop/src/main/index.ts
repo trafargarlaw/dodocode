@@ -57,6 +57,9 @@ function isWebUrl(url: string): boolean {
 }
 
 async function createMainWindow(): Promise<void> {
+  // Only the first window is recorded. A later one, as macOS opens after the last one closes,
+  // neither marks spans for a trace nor waits on one to close.
+  const traced = recorder?.waiting ? recorder : undefined;
   const window = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -78,7 +81,7 @@ async function createMainWindow(): Promise<void> {
       nodeIntegration: false,
       additionalArguments: [
         ...(dev ? ["--dodocode-dev"] : []),
-        ...(recorder ? ["--dodocode-trace"] : []),
+        ...(traced ? ["--dodocode-trace"] : []),
       ],
     },
   });
@@ -94,14 +97,14 @@ async function createMainWindow(): Promise<void> {
   // The app window only ever shows the app itself.
   window.webContents.on("will-navigate", (event) => event.preventDefault());
 
-  if (recorder) {
+  if (traced) {
     // The trace is written while the window is still open: the recording needs its page.
     window.on("close", (event) => {
-      if (recorder.finished) return;
+      if (traced.finished) return;
       event.preventDefault();
-      void recorder.stop().finally(() => window.close());
+      void traced.stop().finally(() => window.close());
     });
-    await recorder.attach(window.webContents);
+    await traced.attach(window.webContents);
   }
 
   if (rendererDevUrl) {

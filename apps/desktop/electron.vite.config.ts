@@ -15,7 +15,7 @@ export default defineConfig({
         // The server runs in its own utility process, started by the main process.
         input: {
           index: resolve("src/main/index.ts"),
-          server: resolve("../server/src/main.ts"),
+          server: resolve("../server/src/start.ts"),
         },
       },
     },
