@@ -145,7 +145,11 @@ export class App implements ThreadContext {
   /** Conversations being brought in, so two asks at once bring in one thread. */
   private bringing = new Map<string, Promise<Thread>>();
 
-  constructor(dataDir: string) {
+  /** `providers` are the agents it runs. A test gives its own. */
+  constructor(
+    dataDir: string,
+    providers: Provider[] = [new ClaudeProvider(), new CodexProvider()],
+  ) {
     this.dataDir = dataDir;
     this.attachmentsDir = join(dataDir, "attachments");
     mkdirSync(this.attachmentsDir, { recursive: true });
@@ -153,7 +157,7 @@ export class App implements ThreadContext {
     this.worktreesDir = join(dataDir, "worktrees");
     this.store = new Store(join(dataDir, "dodocode.db"));
     this.settings = { ...DEFAULT_SETTINGS, ...this.store.settings() };
-    for (const provider of [new ClaudeProvider(), new CodexProvider()]) {
+    for (const provider of providers) {
       this.providers.set(provider.id, provider);
       this.providerInfo.set(provider.id, {
         id: provider.id,
