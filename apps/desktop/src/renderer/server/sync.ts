@@ -4,6 +4,7 @@
 
 import type { SyncConfig } from "@tanstack/react-db";
 import type { ServerEvent } from "@dodocode/protocol";
+import { startShownSpan } from "../perf";
 import { Disconnected, server } from "./connection";
 
 type SyncParams<T extends object, K extends string | number> = Parameters<
@@ -67,12 +68,16 @@ export interface FeedSink<S> {
 }
 
 export interface FeedOptions<S> {
+  /** Names the feed's `feed:` span in a performance trace: see perf.ts. */
+  name: string;
   /** Asks the server for everything the feed covers. */
   load(): Promise<S>;
   /** Applies an event that came after the snapshot. */
   apply(event: ServerEvent): void;
   /** Runs before a new snapshot lands: drops events the snapshot already holds. */
   reset?(): void;
+  /** Runs each time a snapshot has landed in the sinks. */
+  loaded?(): void;
   /** Runs when the last sink leaves. */
   release?(): void;
   /** True to try a failed load again after a pause; false to report it to the sinks. */
@@ -124,12 +129,15 @@ export class Feed<S> {
   private load(): void {
     const generation = ++this.generation;
     this.live = false;
+    const end = startShownSpan(`feed:${this.options.name}`);
     this.options.load().then(
       (snapshot) => {
         if (generation !== this.generation) return;
         this.live = true;
         this.options.reset?.();
         for (const sink of Array.from(this.sinks)) sink.load(snapshot);
+        end();
+        this.options.loaded?.();
       },
       (error: unknown) => {
         if (generation !== this.generation) return;

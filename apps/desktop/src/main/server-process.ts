@@ -23,6 +23,9 @@ export class ServerProcess {
   private stopping = false;
   private logFile: WriteStream | undefined;
 
+  /** `profile` is where the server writes a CPU profile of its run (apps/server/src/profile.ts). */
+  constructor(private profile?: string) {}
+
   /** The server's log, beside the app's other logs. Opened once the app knows where they go. */
   private get log(): WriteStream {
     if (!this.logFile) {
@@ -50,6 +53,7 @@ export class ServerProcess {
         DODOCODE_DATA_DIR: app.getPath("userData"),
         DODOCODE_TOKEN: this.token,
         DODOCODE_PORT: String(this.port),
+        ...(this.profile ? { DODOCODE_CPU_PROFILE: this.profile } : {}),
       },
     });
     this.child = child;

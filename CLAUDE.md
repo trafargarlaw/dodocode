@@ -17,6 +17,10 @@ Use pnpm, and add a package to the workspace package that imports it. Root `devD
 
 `packages/ui` (`@dodocode/ui`) holds the shadcn components, hooks and theme that apps share. Import them as `@dodocode/ui/components/<name>`. Run the shadcn CLI in `packages/ui` (`pnpm exec shadcn add <name>`). Run from `apps/desktop`, it still writes the component to `packages/ui`, but it puts the component's dependencies in the desktop's `dependencies`, which ships them unbundled.
 
+## Performance
+
+Before making anything faster, or claiming a change did, measure it with `pnpm trace` and `pnpm perfq`, as `docs/agents/perf.md` describes.
+
 ## Agent skills
 
 ### Issue tracker

@@ -13,6 +13,7 @@ import type { CallFrame, ServerEvent, ServerFrame } from "@dodocode/protocol";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { App, type Client } from "./app";
+import { startProfile, stopProfile } from "./profile";
 import { errorText, log } from "./util";
 import { PAGE_HEIGHT_SCRIPT } from "./web-files";
 
@@ -32,6 +33,7 @@ const requestedPort = Number(process.env.DODOCODE_PORT) || 0;
 const MAX_FRAME = 64 * 1024 * 1024;
 const HEARTBEAT_MS = 30_000;
 
+startProfile();
 mkdirSync(dataDir, { recursive: true });
 const app = new App(dataDir);
 app.start();
@@ -268,6 +270,7 @@ async function shutdown(reason: string): Promise<void> {
   } catch (error) {
     log("server", "could not stop cleanly", errorText(error));
   }
+  await stopProfile();
   clearTimeout(forced);
   process.exit(0);
 }

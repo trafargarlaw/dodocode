@@ -9,6 +9,7 @@ import {
 const bridge: DodocodeBridge = {
   platform: process.platform,
   dev: process.argv.includes("--dodocode-dev"),
+  tracing: process.argv.includes("--dodocode-trace"),
   setWindowTheme: (theme) => ipcRenderer.send(WINDOW_THEME_CHANNEL, theme),
   serverInfo: () => ipcRenderer.invoke(SERVER_INFO_CHANNEL),
   pickFolder: (defaultPath) => ipcRenderer.invoke(PICK_FOLDER_CHANNEL, defaultPath),

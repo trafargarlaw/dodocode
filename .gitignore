@@ -30,5 +30,8 @@ release
 # Turborepo
 .turbo
 
+# Rust build output (tools/perfq)
+target
+
 # TypeScript incremental build info
 *.tsbuildinfo

@@ -3,6 +3,8 @@ directories:
   output: release
 files:
   - out/**/*
+  # Source maps are for reading performance traces (tools/perfq), not for the app.
+  - "!out/**/*.map"
   # resources/ holds the tray icons, made ahead of a tray the app does not have yet. Nothing opens
   # them, so the app leaves them out: add `resources/**/*` here with the first code that does.
   - package.json

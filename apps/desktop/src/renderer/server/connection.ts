@@ -18,6 +18,7 @@ import {
   type ServerFrame,
 } from "@dodocode/protocol";
 import type { ServerInfo } from "../../preload/bridge";
+import { startSpan } from "../perf";
 
 /** `connecting` until the first socket opens; `reconnecting` after one dropped. */
 export type ConnectionState = "connecting" | "open" | "reconnecting";
@@ -38,6 +39,8 @@ const CALL_WAIT_MS = 15_000;
 interface PendingCall {
   resolve: (result: unknown) => void;
   reject: (error: unknown) => void;
+  /** Ends the call's span: see perf.ts. */
+  end: () => void;
 }
 
 class Connection {
@@ -74,7 +77,11 @@ class Connection {
           return;
         }
         const id = this.nextId++;
-        this.calls.set(id, { resolve: resolve as (result: unknown) => void, reject });
+        this.calls.set(id, {
+          resolve: resolve as (result: unknown) => void,
+          reject,
+          end: startSpan(`call:${method}`),
+        });
         socket.send(JSON.stringify({ id, method, params }));
       };
       if (this.state === "open") {
@@ -156,6 +163,7 @@ class Connection {
         return;
       }
       if ("event" in frame) {
+        const end = startSpan(`event:${frame.event.type}`);
         for (const listener of Array.from(this.eventListeners)) {
           try {
             listener(frame.event);
@@ -163,11 +171,13 @@ class Connection {
             console.error("An event listener failed.", error);
           }
         }
+        end();
         return;
       }
       const call = this.calls.get(frame.id);
       if (!call) return;
       this.calls.delete(frame.id);
+      call.end();
       if ("error" in frame) call.reject(new Error(frame.error.message));
       else call.resolve(frame.result);
     });

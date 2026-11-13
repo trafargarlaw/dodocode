@@ -10,6 +10,7 @@ import {
   type WindowTheme,
 } from "../preload/bridge";
 import { ServerProcess } from "./server-process";
+import { TraceRecorder, traceSettings } from "./tracing";
 
 // A development build keeps its projects, threads and settings apart from the installed app's,
 // so the two can run side by side.
@@ -21,7 +22,11 @@ if (!app.requestSingleInstanceLock()) {
   process.exit(0);
 }
 
-const server = new ServerProcess();
+// Set DODOCODE_TRACE to record a performance trace: see tracing.ts.
+const trace = traceSettings();
+const recorder = trace ? new TraceRecorder(trace) : undefined;
+
+const server = new ServerProcess(recorder?.serverProfile);
 
 const rendererDevUrl = process.env.ELECTRON_RENDERER_URL;
 // The page draws the title bar's background, so the window buttons sit on a clear overlay.
@@ -51,7 +56,7 @@ function isWebUrl(url: string): boolean {
   }
 }
 
-function createMainWindow(): void {
+async function createMainWindow(): Promise<void> {
   const window = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -71,7 +76,10 @@ function createMainWindow(): void {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      additionalArguments: dev ? ["--dodocode-dev"] : [],
+      additionalArguments: [
+        ...(dev ? ["--dodocode-dev"] : []),
+        ...(recorder ? ["--dodocode-trace"] : []),
+      ],
     },
   });
 
@@ -85,6 +93,16 @@ function createMainWindow(): void {
 
   // The app window only ever shows the app itself.
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+
+  if (recorder) {
+    // The trace is written while the window is still open: the recording needs its page.
+    window.on("close", (event) => {
+      if (recorder.finished) return;
+      event.preventDefault();
+      void recorder.stop().finally(() => window.close());
+    });
+    await recorder.attach(window.webContents);
+  }
 
   if (rendererDevUrl) {
     void window.loadURL(rendererDevUrl);
@@ -129,10 +147,10 @@ app.on("second-instance", () => {
 
 void app.whenReady().then(() => {
   server.start();
-  createMainWindow();
+  void createMainWindow();
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    if (BrowserWindow.getAllWindows().length === 0) void createMainWindow();
   });
 });
 
@@ -140,12 +158,13 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-// The server finishes writing and stops its agents before the app exits.
+// The server finishes writing and stops its agents before the app exits, and a trace being
+// recorded is written.
 let serverStopped = false;
 app.on("before-quit", (event) => {
   if (serverStopped) return;
   event.preventDefault();
-  void server.stop().finally(() => {
+  void Promise.all([recorder?.stop(), server.stop()]).finally(() => {
     serverStopped = true;
     app.quit();
   });

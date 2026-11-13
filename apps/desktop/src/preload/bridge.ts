@@ -32,6 +32,8 @@ export interface DodocodeBridge {
   platform: string;
   /** True in a build made with `electron-vite dev`, which keeps its data apart. */
   dev: boolean;
+  /** True while the app records a performance trace (DODOCODE_TRACE): see renderer/perf.ts. */
+  tracing: boolean;
   setWindowTheme(theme: WindowTheme): void;
   /** Resolves once the server listens, which can take a moment after a restart. */
   serverInfo(): Promise<ServerInfo>;

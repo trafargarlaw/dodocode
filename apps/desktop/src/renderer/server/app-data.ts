@@ -18,6 +18,7 @@ import {
 } from "@dodocode/protocol";
 import { toast } from "@dodocode/ui/components/toast";
 import { GROUP_LABEL } from "../task-list";
+import { markStartup } from "../perf";
 import { server } from "./connection";
 import { Feed, feedSync, type RowWriter } from "./sync";
 
@@ -30,7 +31,9 @@ let providerRows: RowWriter<ProviderInfo, string> | undefined;
 let settingsRows: RowWriter<SettingsRow, string> | undefined;
 
 const appFeed = new Feed<Snapshot>({
+  name: "app",
   load: () => server.call("app.snapshot", {}),
+  loaded: markStartup,
   retry: true,
   apply: (event) => {
     switch (event.type) {

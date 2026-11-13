@@ -13,7 +13,9 @@
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",
-    "format:check": "oxfmt --check"
+    "format:check": "oxfmt --check",
+    "trace": "turbo run build --filter=@dodocode/desktop --output-logs=errors-only && node apps/desktop/scripts/trace.mjs",
+    "perfq": "cargo run --quiet --release --manifest-path tools/perfq/Cargo.toml --"
   },
   "devDependencies": {
     "oxfmt": "^0.78.0",

@@ -39,6 +39,7 @@ export class ThreadFeed {
 
   constructor(readonly threadId: string) {
     const feed = new Feed<ThreadDetail>({
+      name: "thread",
       load: () => server.call("thread.open", { threadId }),
       apply: (event) => this.apply(event),
       reset: () => this.drop(),
