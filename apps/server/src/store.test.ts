@@ -53,3 +53,12 @@ test("a thread saved before costs were kept still resumes its sessions", () => {
     codex: { id: "c1" },
   });
 });
+
+test("the sessions threads pick up are known by provider and id, however they were saved", () => {
+  const store = new Store(":memory:");
+  for (const id of ["a", "b", "c"]) store.saveThread(thread(id));
+  store.saveResumePoints("a", { claude: "s1" } as unknown as ResumePoints);
+  store.saveResumePoints("b", { claude: { id: "s2", costUsd: 0.5 }, codex: { id: "c1" } });
+
+  expect([...store.resumedSessions()].toSorted()).toEqual(["claude:s1", "claude:s2", "codex:c1"]);
+});

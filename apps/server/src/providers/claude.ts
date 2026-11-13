@@ -29,6 +29,7 @@ import type {
 
 import { AsyncQueue, errorText, log, newId, within } from "../util";
 import { appInstructions, appToolsFor } from "./app-tools";
+import { ClaudeSessions } from "./claude-sessions";
 import { compactNotice, Transcript, type TranscriptHooks } from "./claude-transcript";
 import { APP_SERVER, APP_TOOLS, changesForInput, describeTool, relativePath } from "./claude-tools";
 import { agentEnv, findOnPath, HOME_BIN } from "./env";
@@ -151,6 +152,7 @@ async function* silentPrompt(signal: AbortSignal): AsyncGenerator<SDKUserMessage
 export class ClaudeProvider implements Provider {
   readonly id = "claude" as const;
   readonly label = "Claude";
+  readonly sessions = new ClaudeSessions();
   /** Unset while the SDK's own bundled executable works. */
   executable: string | undefined = process.env.DODOCODE_CLAUDE_PATH || unpackedBundledClaude();
 

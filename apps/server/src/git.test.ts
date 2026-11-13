@@ -11,6 +11,7 @@ import {
   countChanges,
   hasChanges,
   initRepo,
+  mainCheckout,
   mergeBranch,
   parseDiff,
   repoOf,
@@ -186,6 +187,16 @@ describe("worktrees", () => {
     ]);
     expect(files[2]!.diff).toBe("@@ -0,0 +1,2 @@\n+new\n+file\n");
     expect(await countChanges(tree, "main")).toEqual({ files: 3, added: 4, removed: 1 });
+  });
+
+  test("a folder in a worktree belongs to the main checkout, and one outside a repository to none", async () => {
+    const tree = join(dir, "side");
+    await addWorktree(project, tree, "side");
+    mkdirSync(join(tree, "src"));
+
+    expect(await mainCheckout(join(tree, "src"))).toBe(project);
+    expect(await mainCheckout(project)).toBe(project);
+    expect(await mainCheckout(dir)).toBeUndefined();
   });
 
   test("a merge that conflicts is taken back, and names the files", async () => {

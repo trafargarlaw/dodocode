@@ -69,6 +69,42 @@ export interface FolderEntry {
   git?: boolean;
 }
 
+/** A conversation an agent had in another app, which can be brought in as a thread. */
+export interface OutsideSession {
+  provider: ProviderId;
+  /** The agent's own id for it. */
+  id: string;
+  title: string;
+  /** The first thing the person asked, when the title says something else. */
+  firstPrompt?: string;
+  /** The folder it worked in. */
+  cwd: string;
+  /** The branch checked out there when it last ran. */
+  branch?: string;
+  /** The app it was started in, as the person knows it, such as Claude Code or VS Code. */
+  app: string;
+  createdAt?: number;
+  /** When something last happened in it. */
+  updatedAt: number;
+  /** Set once it was brought in: the thread it is. */
+  threadId?: string;
+}
+
+export interface SessionListing {
+  /** Newest first. */
+  sessions: OutsideSession[];
+  /** An agent whose conversations could not be listed, and why. */
+  problems: { provider: ProviderId; message: string }[];
+}
+
+/** Where a conversation would go, brought in. */
+export interface SessionPlace {
+  /** The project it would go in. One without an id is added for its folder. Unset: none. */
+  project?: { id?: string; name: string; path: string };
+  /** Set when the folder it worked in is gone: its history comes along, but it can't go on. */
+  folderGone?: boolean;
+}
+
 /** How merging a worktree's branch went. When it conflicts, nothing changed. */
 export type MergeResult =
   | { merged: true; thread: Thread }
@@ -217,6 +253,23 @@ export interface Methods {
   "commands.list": {
     params: { provider: ProviderId; projectId?: string };
     result: SlashCommand[];
+  };
+
+  /** The conversations agents had in other apps, to bring one in. */
+  "sessions.list": { params: Record<string, never>; result: SessionListing };
+  /** Where a conversation would go, brought in. */
+  "sessions.inspect": {
+    params: { provider: ProviderId; sessionId: string };
+    result: SessionPlace;
+  };
+  /**
+   * Brings a conversation from another app in as a thread, with all that was said and done in
+   * it, in the project of the folder it worked in. `same` carries on that very conversation;
+   * `copy` carries on a copy of it. One brought in already gives back its thread.
+   */
+  "sessions.import": {
+    params: { provider: ProviderId; sessionId: string; mode: "same" | "copy" };
+    result: Thread;
   };
 
   "settings.update": { params: Partial<Settings>; result: Settings };

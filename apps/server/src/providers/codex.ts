@@ -7,6 +7,7 @@ import { errorText, log, wellFormed } from "../util";
 import { appInstructions, appToolsFor, runAppTool } from "./app-tools";
 import { CodexProcess, RpcError } from "./codex-rpc";
 import { type CodexItem, firstLine, ItemMapper, shownCommand } from "./codex-items";
+import { CodexSessions } from "./codex-sessions";
 import { findOnPath } from "./env";
 import type {
   Provider,
@@ -51,6 +52,7 @@ export class CodexProvider implements Provider {
   readonly label = "Codex";
   private process: CodexProcess | undefined;
   private routes = new Map<string, Route>();
+  readonly sessions = new CodexSessions(() => this.server());
 
   private executable(): string | undefined {
     return process.env.DODOCODE_CODEX_PATH || findOnPath("codex");

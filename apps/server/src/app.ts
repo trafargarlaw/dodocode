@@ -18,15 +18,19 @@ import type {
   ImageRef,
   Item,
   Method,
+  OutsideSession,
   Params,
   Project,
   ProviderId,
   ProviderInfo,
   Result,
   ServerEvent,
+  SessionListing,
+  SessionPlace,
   Settings,
   SlashCommand,
   Thread,
+  ThreadOrigin,
   ThreadSettings,
   WorkspaceMode,
   Worktree,
@@ -43,6 +47,7 @@ import {
   deleteBranch,
   hasChanges,
   initRepo,
+  mainCheckout,
   mergeBranch,
   removeWorktree,
   repoOf,
@@ -50,6 +55,7 @@ import {
   startOf,
 } from "./git";
 import { expandPath, listFolders } from "./folders";
+import { History } from "./history";
 import { ClaudeProvider } from "./providers/claude";
 import { CodexProvider } from "./providers/codex";
 import type {
@@ -68,6 +74,7 @@ import {
   reviewPrompt,
   type ReviewBrief,
 } from "./review";
+import { carriedModel, projectHolding } from "./sessions";
 import { Store } from "./store";
 import { itemFrom, merged, moved, promoted, reopened, split, todoTask } from "./tasks";
 import { ThreadRuntime, type ThreadContext, type ThreadMessage } from "./thread";
@@ -79,6 +86,8 @@ export interface Client {
   /** Threads whose items this client receives. */
   open: Set<string>;
 }
+
+type OriginMode = ThreadOrigin["mode"];
 
 type Handler<M extends Method> = (
   params: Params<M>,
@@ -131,6 +140,10 @@ export class App implements ThreadContext {
   private runtimes = new Map<string, ThreadRuntime>();
   private settings: Settings;
   private clients = new Set<Client>();
+  /** The conversations from other apps the last listing found, by `provider:id`. */
+  private found = new Map<string, OutsideSession>();
+  /** Conversations being brought in, so two asks at once bring in one thread. */
+  private bringing = new Map<string, Promise<Thread>>();
 
   constructor(dataDir: string) {
     this.dataDir = dataDir;
@@ -263,6 +276,8 @@ export class App implements ThreadContext {
     // A subagent works where the thread that started it works.
     const root = this.rootOf(thread);
     if (root.worktree && root.worktree.mergedAt === undefined) return root.worktree.workDir;
+    // A conversation from another app carries on where it worked there.
+    if (root.origin) return root.origin.cwd;
     if (root.projectId) return this.projectPath(root.projectId);
     const dir = join(this.scratchDir, root.id);
     mkdirSync(dir, { recursive: true });
@@ -696,6 +711,12 @@ export class App implements ThreadContext {
   private async makeWorkspace(threadId: string): Promise<void> {
     const runtime = this.runtime(threadId);
     const thread = runtime.thread;
+    const origin = this.rootOf(thread).origin;
+    if (origin && !existsSync(origin.cwd)) {
+      throw new Error(
+        `The folder this conversation worked in, ${origin.cwd}, is gone, so it can't carry on.`,
+      );
+    }
     if (thread.kind !== "main" || !thread.projectId || runtime.running) return;
     const project = this.project(thread.projectId);
     const worktree = thread.worktree;
@@ -979,6 +1000,189 @@ export class App implements ThreadContext {
     child.unref();
   }
 
+  // Conversations from other apps
+
+  /** Every provider's conversations in other apps, newest first, beside dodocode's threads. */
+  private async listSessions(): Promise<SessionListing> {
+    const brought = new Map<string, string>();
+    for (const thread of this.threads.values()) {
+      if (thread.origin) {
+        brought.set(`${thread.origin.provider}:${thread.origin.sessionId}`, thread.id);
+      }
+    }
+    const ours = this.store.resumedSessions();
+    const listing: SessionListing = { sessions: [], problems: [] };
+    await Promise.all(
+      [...this.providers.values()].map(async (provider) => {
+        if (this.providerInfo.get(provider.id)?.status === "missing") return;
+        try {
+          for (const session of await provider.sessions.list()) {
+            const key = `${provider.id}:${session.id}`;
+            const threadId = brought.get(key);
+            // dodocode's own threads, and the copies it carries on, show as threads already.
+            if (!threadId && ours.has(key)) continue;
+            listing.sessions.push({
+              provider: provider.id,
+              ...session,
+              ...(threadId ? { threadId } : {}),
+            });
+          }
+        } catch (error) {
+          log("app", `could not list ${provider.label}'s conversations`, errorText(error));
+          listing.problems.push({ provider: provider.id, message: errorText(error) });
+        }
+      }),
+    );
+    listing.sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+    this.found = new Map(
+      listing.sessions.map((session) => [`${session.provider}:${session.id}`, session]),
+    );
+    return listing;
+  }
+
+  private async foundSession(provider: ProviderId, sessionId: string): Promise<OutsideSession> {
+    const key = `${provider}:${sessionId}`;
+    if (!this.found.has(key)) await this.listSessions();
+    const session = this.found.get(key);
+    if (!session) throw new Error("That conversation is gone.");
+    return session;
+  }
+
+  /** The project a conversation from another app goes in, by the folder it worked in. */
+  private async placeOf(cwd: string): Promise<SessionPlace> {
+    const holding = projectHolding(this.projects.values(), cwd);
+    if (!existsSync(cwd)) return { ...(holding ? known(holding) : {}), folderGone: true };
+    if (holding) return known(holding);
+    // A worktree the other app made of a project's repository goes with the project.
+    const main = await mainCheckout(cwd).catch(() => undefined);
+    const ofRepo = main ? projectHolding(this.projects.values(), main) : undefined;
+    if (ofRepo) return known(ofRepo);
+    const path = main ?? cwd;
+    return { project: { name: basename(path) || path, path } };
+  }
+
+  private bringIn(provider: ProviderId, sessionId: string, mode: OriginMode): Promise<Thread> {
+    const key = `${provider}:${sessionId}`;
+    const pending = this.bringing.get(key);
+    if (pending) return pending;
+    const work = this.readIn(provider, sessionId, mode).finally(() => this.bringing.delete(key));
+    this.bringing.set(key, work);
+    return work;
+  }
+
+  /**
+   * Makes a thread of a conversation from another app: all that was said and done in it, and
+   * in its subagents, then the agent's own session to carry on, itself or a copy.
+   */
+  private async readIn(
+    providerId: ProviderId,
+    sessionId: string,
+    mode: OriginMode,
+  ): Promise<Thread> {
+    const already = [...this.threads.values()].find(
+      (thread) => thread.origin?.provider === providerId && thread.origin.sessionId === sessionId,
+    );
+    if (already) return already;
+    const provider = this.provider(providerId);
+    const session = await this.foundSession(providerId, sessionId);
+    const threadId = newId();
+    const history = new History(threadId, (data, mime, name) => this.keepFile(data, mime, name));
+    const read = await provider.sessions.read(sessionId, history);
+    const place = await this.placeOf(session.cwd);
+    // Where what happened there ends, and what happens here begins.
+    const now = Date.now();
+    history.main.clock.at = now;
+    history.main.add({
+      type: "notice",
+      level: "info",
+      text: broughtNotice(session.app, mode, place),
+    });
+    const items = history.main.finish();
+    if (items.length === 1) throw new Error("That conversation has nothing in it yet.");
+    // One whose folder is gone can't carry on, so it needs no copy to.
+    const resumeId =
+      mode === "same"
+        ? sessionId
+        : place.folderGone
+          ? undefined
+          : await provider.sessions.copy(sessionId, session.cwd);
+    const project = place.project?.id
+      ? this.project(place.project.id)
+      : place.project && !place.folderGone
+        ? await this.addProject(place.project.path)
+        : undefined;
+    const carried = carriedModel(
+      this.providerInfo.get(providerId)?.models ?? [],
+      read.model,
+      read.effort,
+    );
+    const settings = this.threadSettings({ provider: providerId, ...carried });
+    const { first } = span(items, session.createdAt ?? session.updatedAt);
+    const thread: Thread = {
+      id: threadId,
+      ...(project ? { projectId: project.id } : {}),
+      kind: "main",
+      title: read.title || session.title,
+      status: "idle",
+      settings,
+      createdAt: first,
+      updatedAt: now,
+      // Bringing it in is what happened in it last.
+      activityAt: now,
+      startedAt: first,
+      origin: {
+        provider: providerId,
+        app: session.app,
+        sessionId,
+        cwd: session.cwd,
+        mode,
+        broughtAt: now,
+      },
+    };
+    const children = history.children.map((child) => {
+      const childItems = child.writer.finish();
+      const times = span(childItems, first);
+      const childThread: Thread = {
+        id: child.writer.threadId,
+        ...(project ? { projectId: project.id } : {}),
+        parentId: child.parentId,
+        parentItemId: child.parentItemId,
+        kind: "subagent",
+        title: child.title,
+        status: "idle",
+        settings,
+        createdAt: times.first,
+        updatedAt: now,
+        activityAt: times.last,
+        startedAt: times.first,
+      };
+      return { thread: childThread, items: childItems };
+    });
+    this.store.transaction(() => {
+      this.store.saveThread(thread);
+      if (resumeId) {
+        this.store.saveResumePoints(thread.id, {
+          [providerId]: {
+            id: resumeId,
+            ...(read.costUsd !== undefined ? { costUsd: read.costUsd } : {}),
+          },
+        });
+      }
+      for (const item of items) this.store.saveItem(item);
+      for (const child of children) {
+        this.store.saveThread(child.thread);
+        for (const item of child.items) this.store.saveItem(item);
+      }
+    });
+    this.emit({ type: "thread", thread });
+    for (const child of children) this.emit({ type: "thread", thread: child.thread });
+    log(
+      "app",
+      `brought in ${provider.label} conversation ${sessionId} from ${session.app} (${mode}): ${items.length} items, ${children.length} subagents`,
+    );
+    return thread;
+  }
+
   // Methods
 
   private handlers: { [M in Method]: Handler<M> } = {
@@ -1038,6 +1242,13 @@ export class App implements ThreadContext {
       this.openInEditor(this.projectPath(projectId));
       return null;
     },
+
+    "sessions.list": () => this.listSessions(),
+
+    "sessions.inspect": async ({ provider, sessionId }) =>
+      this.placeOf((await this.foundSession(provider, sessionId)).cwd),
+
+    "sessions.import": ({ provider, sessionId, mode }) => this.bringIn(provider, sessionId, mode),
 
     "thread.create": async ({ projectId, settings, message, workspace }) => {
       if (projectId) this.projectPath(projectId);
@@ -1127,6 +1338,10 @@ export class App implements ThreadContext {
         if (!existsSync(worktree.path)) return { against: worktree.base, files: [] };
         const changes = await changesIn(worktree.path, worktree.base ?? worktree.from);
         return { ...(worktree.base ? { against: worktree.base } : {}), ...changes };
+      }
+      if (root.origin) {
+        if (!(await repoOf(root.origin.cwd))) return { files: [] };
+        return changesIn(root.origin.cwd, undefined);
       }
       // A thread without a project works in a folder of its own, which no repository holds.
       if (!root.projectId) return { files: [] };
@@ -1345,6 +1560,32 @@ export class App implements ThreadContext {
 }
 
 /** What the person wrote in a thread, oldest first: their messages, not the app's. */
+/** What shows where a conversation brought in from another app carries on in dodocode. */
+function broughtNotice(app: string, mode: OriginMode, place: SessionPlace): string {
+  if (place.folderGone) {
+    return `Brought in from ${app}. The folder it worked in is gone, so it can't carry on here.`;
+  }
+  return mode === "same"
+    ? `Brought in from ${app}. It carries on the same conversation from here.`
+    : `Brought in from ${app} as a copy. It goes its own way from here; the original stays in ${app}.`;
+}
+
+/** A project, as the place a conversation from another app goes in. */
+function known(project: Project): SessionPlace {
+  return { project: { id: project.id, name: project.name, path: project.path } };
+}
+
+/** When the first and last of some items happened, or `fallback` when none says. */
+function span(list: readonly Item[], fallback: number): { first: number; last: number } {
+  const times = list.map((item) => item.createdAt).filter((at) => at > 0);
+  return times.length === 0
+    ? { first: fallback, last: fallback }
+    : {
+        first: times.reduce((a, b) => Math.min(a, b)),
+        last: times.reduce((a, b) => Math.max(a, b)),
+      };
+}
+
 function personsMessages(items: readonly Item[]): string[] {
   return items.flatMap((item) => (item.type === "user" && !item.app ? [item.text] : []));
 }

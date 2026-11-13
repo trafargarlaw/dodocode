@@ -18,8 +18,9 @@ import type {
   ThreadSettings,
   TurnEndItem,
 } from "@dodocode/protocol";
-import type { ApprovalDecision } from "@dodocode/protocol";
+import type { ApprovalDecision, OutsideSession } from "@dodocode/protocol";
 
+import type { History } from "../history";
 import type { JobEnd } from "../jobs";
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -190,4 +191,29 @@ export interface Provider {
   /** Checks the provider can run, and lists its models and commands. */
   check(): Promise<ProviderCheck>;
   createSession(host: SessionHost): ProviderSession;
+  /** The conversations its agent had in other apps. */
+  readonly sessions: SessionSource;
+}
+
+/** A conversation the agent had in another app, as its provider lists it. */
+export type FoundSession = Omit<OutsideSession, "provider" | "threadId">;
+
+/** What reading a conversation from another app found, beside its items. */
+export interface SessionRead {
+  title?: string;
+  /** The model and effort it ran with last. */
+  model?: string;
+  effort?: string;
+  /** The running cost it had reached, which the agent carries on from. */
+  costUsd?: number;
+}
+
+/** The conversations a provider's agent had in other apps, which a thread can carry on. */
+export interface SessionSource {
+  /** Newest first. */
+  list(): Promise<FoundSession[]>;
+  /** Writes what was said and done in it, and in its subagents, into `history`. */
+  read(id: string, history: History): Promise<SessionRead>;
+  /** Makes a copy of it, which goes on apart from it, and gives the copy's id. */
+  copy(id: string, cwd: string): Promise<string>;
 }

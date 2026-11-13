@@ -4,7 +4,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import type { ChangeCount, FileChange } from "@dodocode/protocol";
 
@@ -103,6 +103,19 @@ export async function repoOf(folder: string): Promise<Repo | undefined> {
   if (ref.startsWith(BRANCH_REF)) repo.branch = ref.slice(BRANCH_REF.length);
   if (head) repo.head = head;
   return repo;
+}
+
+/**
+ * The main checkout of the repository a folder is in, whichever of its worktrees holds the
+ * folder. Unset outside a repository, and for a bare one.
+ */
+export async function mainCheckout(folder: string): Promise<string | undefined> {
+  if (!existsSync(folder)) return undefined;
+  const result = await run(folder, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const common = result.stdout.trim();
+  if (result.code !== 0 || !common) return undefined;
+  const full = resolve(common);
+  return basename(full) === ".git" ? dirname(full) : undefined;
 }
 
 /** The branches a repository has. */

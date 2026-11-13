@@ -169,6 +169,19 @@ export class Store {
     return points as ResumePoints;
   }
 
+  /** Every agent session a thread picks up, as `provider:id`. */
+  resumedSessions(): Set<string> {
+    const rows = this.sql("select resume from threads").all() as { resume: string }[];
+    const sessions = new Set<string>();
+    for (const row of rows) {
+      const saved = JSON.parse(row.resume) as Record<string, ResumePoint | string>;
+      for (const [provider, point] of Object.entries(saved)) {
+        sessions.add(`${provider}:${typeof point === "string" ? point : point.id}`);
+      }
+    }
+    return sessions;
+  }
+
   saveResumePoints(threadId: string, points: ResumePoints): void {
     this.sql("update threads set resume = ? where id = ?").run(JSON.stringify(points), threadId);
   }

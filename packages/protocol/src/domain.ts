@@ -244,6 +244,26 @@ export interface Thread {
   context?: ContextUsage;
   /** On a review's thread: what it reviews, and what it found. */
   review?: Review;
+  /** Set on a thread brought in from a conversation started in another app. */
+  origin?: ThreadOrigin;
+}
+
+/** Where a thread brought in from another app was started, and how it carries on. */
+export interface ThreadOrigin {
+  provider: ProviderId;
+  /** The app it was started in, as the person knows it, such as Claude Code or VS Code. */
+  app: string;
+  /** The agent's own id for the conversation it came from. */
+  sessionId: string;
+  /** The folder the conversation worked in. The thread's agent carries on there. */
+  cwd: string;
+  /**
+   * `same`: the thread carries on that very conversation, which the app it came from can carry
+   * on too. `copy`: it carries on a copy, and the original stays as it was.
+   */
+  mode: "same" | "copy";
+  /** When it was brought in. */
+  broughtAt: number;
 }
 
 /** An image the person pasted or dropped, kept by the server. */
