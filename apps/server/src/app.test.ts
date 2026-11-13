@@ -149,4 +149,24 @@ describe("reviews", { timeout: 30_000 }, () => {
       new RegExp(`^I read why you left ${findingId} as it is, and I want it fixed anyway`),
     );
   });
+
+  test("findings reported just before the app quit go to the task when it starts again", async () => {
+    const task = await taskInReview();
+    t.agent.reviewer = async (host) => {
+      host.reportFindings([{ group: "Standards", kind: "violation", summary: "b.txt is empty" }]);
+      // The app quits before the reviewer's turn ends.
+      await new Promise(() => {});
+    };
+    const review = await t.call("review.start", { threadId: task.id });
+    await eventually(async () => {
+      expect((await t.thread(review.id)).review!.reportedAt).toBeTypeOf("number");
+    });
+    await t.restart();
+    const sent = await eventually(async () => {
+      const messages = await t.messages(task.id);
+      expect(messages).toHaveLength(2);
+      return messages[1];
+    });
+    expect(sent).toContain("violation: b.txt is empty");
+  });
 });

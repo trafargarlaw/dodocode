@@ -175,6 +175,7 @@ export class App implements ThreadContext {
 
   start(): void {
     for (const project of this.store.projects()) this.projects.set(project.id, project);
+    const recovered: string[] = [];
     for (let thread of this.store.threads()) {
       // Threads from before `startedAt` existed: one with messages has started.
       if (thread.startedAt === undefined && !thread.task && this.store.lastSeq(thread.id) > 0) {
@@ -186,8 +187,12 @@ export class App implements ThreadContext {
       if (unfinished || this.store.jobs(thread.id).some((job) => job.status === "running")) {
         this.runtime(thread.id).recover();
         this.threads.set(thread.id, this.runtime(thread.id).thread);
+        recovered.push(thread.id);
       }
     }
+    // A review the app quit during had no end of turn, so what it reported goes now. Once every
+    // thread is in, since its task may come later.
+    for (const id of recovered) this.inBackground(() => this.reviewEnded(id, "interrupted"));
     void this.refreshProviders();
     for (const project of this.projects.values()) {
       this.inBackground(() => this.refreshGit(project.id));
