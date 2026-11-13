@@ -7,6 +7,7 @@ import {
   Archive02Icon,
   ArchiveArrowUpIcon,
   ArrowDown01Icon,
+  BubbleChatDownload01Icon,
   Cancel01Icon,
   Delete02Icon,
   FilterIcon,
@@ -612,6 +613,19 @@ function ThreadRow({
           {thread.title}
           {thread.archived && <span className="text-sidebar-muted-foreground"> · Archived</span>}
         </span>
+        {thread.origin && (
+          <span
+            title={`Brought in from ${thread.origin.app}`}
+            className="shrink-0 text-sidebar-muted-foreground group-focus-within/thread:invisible group-hover/thread:invisible group-has-data-popup-open/thread:invisible"
+          >
+            <HugeiconsIcon
+              icon={BubbleChatDownload01Icon}
+              strokeWidth={1.8}
+              aria-label={`Brought in from ${thread.origin.app}`}
+              className="size-3"
+            />
+          </span>
+        )}
         {project && (
           <span className="max-w-20 shrink truncate text-[11.5px] text-sidebar-muted-foreground group-focus-within/thread:invisible group-hover/thread:invisible group-has-data-popup-open/thread:invisible">
             {project}

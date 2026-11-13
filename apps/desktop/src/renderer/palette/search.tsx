@@ -1,4 +1,5 @@
-// The palette's first page: search the threads and projects, and run the app's actions.
+// The palette's first page: search the threads and projects, and run the app's actions. A search
+// also finds conversations agents had in other apps, to bring in.
 
 import { useState } from "react";
 import { useAppHotkeys } from "@tanstack/react-hotkeys";
@@ -6,6 +7,7 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { Command as CommandPrimitive } from "cmdk";
 import {
   ArrowRight01Icon,
+  BubbleChatDownload01Icon,
   Folder01Icon,
   FolderAddIcon,
   InspectCodeIcon,
@@ -29,6 +31,7 @@ import { openInEditor, projects, threads } from "../server/app-data";
 import { GROUP_LABEL } from "../task-list";
 import { ago, useNow } from "../time";
 import { openBoard, openThread, useView } from "../view";
+import { useSessions } from "../server/sessions";
 import { SOURCES } from "./add-project";
 import {
   HEADER_INPUT,
@@ -39,6 +42,7 @@ import {
   PaletteHeader,
 } from "./chrome";
 import type { PaletteNav } from "./palette";
+import { SessionItem, sessionWords, useAgentLabels } from "./sessions";
 
 export function SearchPage({
   nav,
@@ -71,7 +75,10 @@ export function SearchPage({
 
   return (
     <Command
-      filter={(_value, query, keywords) => searchScore(keywords ?? [], query)}
+      // The way to the rest of the matches shows whenever its group does, below the matches.
+      filter={(value, query, keywords) =>
+        value === MORE_SESSIONS ? LAST : searchScore(keywords ?? [], query)
+      }
       loop
       className={PALETTE_COMMAND}
     >
@@ -123,6 +130,33 @@ export function SearchPage({
             <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.8} />
             Add a project
             {/* Leads to more choices rather than doing it at once. */}
+            <CommandShortcut>
+              <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5" />
+            </CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            value="action:bring-in"
+            keywords={[
+              "Bring in a conversation",
+              // As the group of matches below is called, so its name finds the way to all of them.
+              "From other apps",
+              "conversations",
+              "sessions",
+              "threads",
+              "import",
+              "history",
+              "resume",
+              "continue",
+              "Claude Code",
+              "Codex",
+              "T3 Code",
+              "VS Code",
+              "terminal",
+            ]}
+            onSelect={() => nav.push({ kind: "sessions" })}
+          >
+            <HugeiconsIcon icon={BubbleChatDownload01Icon} strokeWidth={1.8} />
+            Bring in a conversation
             <CommandShortcut>
               <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5" />
             </CommandShortcut>
@@ -189,6 +223,7 @@ export function SearchPage({
             })}
           </CommandGroup>
         )}
+        {search.trim() && <OutsideMatches search={search} nav={nav} now={now} />}
         {projectList.length > 0 && (
           <CommandGroup heading="Projects">
             {projectList.map((project) => (
@@ -215,5 +250,51 @@ export function SearchPage({
         <KeyHint keys={["Escape"]}>Close</KeyHint>
       </PaletteFooter>
     </Command>
+  );
+}
+
+/** How many conversations from other apps a search shows; the rest are a step away. */
+const OUTSIDE_SHOWN = 5;
+const MORE_SESSIONS = "action:more-sessions";
+/** A score below any match's, which still shows. */
+const LAST = 0.01;
+
+/** The conversations from other apps a search matches, read once something is typed. */
+function OutsideMatches({ search, nav, now }: { search: string; nav: PaletteNav; now: number }) {
+  const { listing } = useSessions();
+  const labels = useAgentLabels();
+  // Those brought in already show among the threads.
+  const matches = (listing?.sessions ?? [])
+    .filter((session) => !session.threadId)
+    .map((session) => ({
+      session,
+      score: searchScore(sessionWords(session, labels(session.provider)), search),
+    }))
+    .filter((match) => match.score > 0);
+  if (matches.length === 0) return null;
+  const shown = matches.toSorted((a, b) => b.score - a.score).slice(0, OUTSIDE_SHOWN);
+  return (
+    <CommandGroup heading="From other apps">
+      {shown.map(({ session }) => (
+        <SessionItem
+          key={`${session.provider}:${session.id}`}
+          session={session}
+          agent={labels(session.provider)}
+          now={now}
+          onSelect={() => nav.push({ kind: "bring", session })}
+        />
+      ))}
+      {matches.length > shown.length && (
+        <CommandItem value={MORE_SESSIONS} onSelect={() => nav.push({ kind: "sessions", search })}>
+          <HugeiconsIcon icon={BubbleChatDownload01Icon} strokeWidth={1.8} />
+          <span className="grow text-muted-foreground">
+            {matches.length - shown.length} more from other apps
+          </span>
+          <CommandShortcut>
+            <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5" />
+          </CommandShortcut>
+        </CommandItem>
+      )}
+    </CommandGroup>
   );
 }

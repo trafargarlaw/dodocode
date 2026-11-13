@@ -16,10 +16,12 @@ import {
   type Project,
   type QueuedMessage,
   type Thread,
+  type ThreadOrigin,
 } from "@dodocode/protocol";
 import {
   ArrowDown01Icon,
   ArrowLeft01Icon,
+  BubbleChatDownload01Icon,
   Cancel01Icon,
   Clock01Icon,
   CommandLineIcon,
@@ -77,6 +79,7 @@ import {
 import { GROUP_LABEL, reviewable } from "../task-list";
 import { MoveItems, StatusGlyph } from "../task-ui";
 import { duration } from "../time";
+import { folderName } from "../palette/sessions";
 import { openThread } from "../view";
 import { toBlocks, type Block } from "./blocks";
 import { clearDraft, Composer, readyDraft } from "./composer";
@@ -400,6 +403,22 @@ function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
   );
 }
 
+/** Where a thread brought in from another app was started, and how it carries on. */
+function OriginChip({ origin }: { origin: ThreadOrigin }) {
+  const how =
+    origin.mode === "same"
+      ? `It carries on the same conversation, which ${origin.app} can carry on too.`
+      : `It carries on a copy. The original stays in ${origin.app} as it was.`;
+  return (
+    <Tip label={`Brought in from ${origin.app}. ${how} It works in ${folderName(origin.cwd)}.`}>
+      <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 text-[11.5px] text-muted-foreground">
+        <HugeiconsIcon icon={BubbleChatDownload01Icon} strokeWidth={1.8} className="size-3.5" />
+        {origin.mode === "copy" ? `Copy from ${origin.app}` : `From ${origin.app}`}
+      </span>
+    </Tip>
+  );
+}
+
 function ThreadHeader({
   thread,
   project,
@@ -440,6 +459,7 @@ function ThreadHeader({
       ) : (
         thread.kind === "main" && <span className="shrink-0 text-muted-foreground">No project</span>
       )}
+      {thread.origin && <OriginChip origin={thread.origin} />}
       <div className="ml-auto flex shrink-0 items-center gap-1">
         {thread.kind === "main" && <StatusPill thread={thread} />}
         {thread.kind === "main" && <ReviewButton thread={thread} />}

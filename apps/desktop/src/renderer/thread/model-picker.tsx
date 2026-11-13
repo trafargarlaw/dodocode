@@ -36,7 +36,7 @@ const AGENT_ICON: Record<ProviderId, typeof ClaudeIcon> = {
   codex: ChatGptIcon,
 };
 
-function AgentIcon({ provider, className }: { provider: ProviderId; className?: string }) {
+export function AgentIcon({ provider, className }: { provider: ProviderId; className?: string }) {
   return <HugeiconsIcon icon={AGENT_ICON[provider]} strokeWidth={1.8} className={className} />;
 }
 

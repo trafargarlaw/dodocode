@@ -82,6 +82,7 @@ export function HeaderAction({
   return (
     <button
       type="button"
+      data-palette-action
       onClick={onClick}
       disabled={disabled || busy}
       title={title}

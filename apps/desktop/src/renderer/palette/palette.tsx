@@ -1,11 +1,13 @@
 // The command palette: one dialog whose pages stack, so a page can lead to another and Back
-// returns. It searches, and it adds projects: from a folder, a new repository or a clone.
+// returns. It searches, adds projects (from a folder, a new repository or a clone), and brings in
+// conversations agents had in other apps.
 
 import { useRef, useState, useSyncExternalStore, type RefObject } from "react";
-import type { Project } from "@dodocode/protocol";
+import type { OutsideSession, Project } from "@dodocode/protocol";
 import { Dialog, DialogContent, DialogTitle } from "@dodocode/ui/components/dialog";
 import { CreatePage, ClonePage, FolderPage, SourcesPage, type Forms } from "./add-project";
 import { SearchPage } from "./search";
+import { BringPage, SessionsPage } from "./sessions";
 
 export type PalettePage =
   | { kind: "search" }
@@ -14,7 +16,11 @@ export type PalettePage =
   /** Browses the folders, to add one as a project, or to pick where a new one goes. */
   | { kind: "folder"; purpose: "add" | "location" }
   | { kind: "create" }
-  | { kind: "clone"; via: "url" | "github" };
+  | { kind: "clone"; via: "url" | "github" }
+  /** The conversations agents had in other apps, to bring one in. */
+  | { kind: "sessions"; search?: string }
+  /** How one of them comes in. */
+  | { kind: "bring"; session: OutsideSession };
 
 interface PaletteState {
   open: boolean;
@@ -148,5 +154,9 @@ function PaletteBody({ onNewThread }: { onNewThread: (projectId?: string) => voi
       return <CreatePage key={key} nav={nav} forms={forms} setForms={setForms} />;
     case "clone":
       return <ClonePage key={key} nav={nav} via={page.via} forms={forms} setForms={setForms} />;
+    case "sessions":
+      return <SessionsPage key={key} nav={nav} search={page.search} />;
+    case "bring":
+      return <BringPage key={key} nav={nav} session={page.session} />;
   }
 }
