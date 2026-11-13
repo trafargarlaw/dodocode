@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -13,6 +13,7 @@ import {
   initRepo,
   mergeBranch,
   parseDiff,
+  repoOf,
 } from "./git";
 
 describe("branch names", () => {
@@ -87,7 +88,8 @@ describe("worktrees", () => {
   const saved = { ...process.env };
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), "dodocode-git-"));
+    // The real path, as git gives it: on macOS the temporary folder is behind a link.
+    dir = realpathSync.native(mkdtempSync(join(tmpdir(), "dodocode-git-")));
     // The person's own git config (signing, hooks, a default branch) stays out of the test.
     writeFileSync(join(dir, "gitconfig"), "");
     Object.assign(process.env, {
@@ -109,6 +111,43 @@ describe("worktrees", () => {
   afterAll(() => {
     process.env = saved;
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a folder's repository: where it is, the branch checked out and the commit", async () => {
+    const plain = join(dir, "plain");
+    const empty = join(dir, "empty");
+    const sub = join(project, "sub");
+    const detached = join(dir, "detached");
+    const side = join(dir, "side");
+    mkdirSync(plain);
+    mkdirSync(sub);
+    git(dir, "init", "-q", "-b", "main", empty);
+    git(project, "worktree", "add", "-q", "--detach", detached);
+    await addWorktree(project, side, "side");
+    const head = git(project, "rev-parse", "HEAD");
+    const gitDir = join(project, ".git");
+
+    expect(await repoOf(plain)).toBeUndefined();
+    expect(await repoOf(empty)).toEqual({
+      root: empty,
+      gitDir: join(empty, ".git"),
+      prefix: "",
+      branch: "main",
+    });
+    expect(await repoOf(sub)).toEqual({
+      root: project,
+      gitDir,
+      prefix: "sub/",
+      branch: "main",
+      head,
+    });
+    expect(await repoOf(detached)).toEqual({
+      root: detached,
+      gitDir: join(gitDir, "worktrees", "detached"),
+      prefix: "",
+      head,
+    });
+    expect((await repoOf(side))?.branch).toBe("side");
   });
 
   test("a new project's repository starts with a commit, so a worktree has a base", async () => {

@@ -74,25 +74,32 @@ export interface Repo {
 /** The repository a folder is in, or nothing when it isn't in one. */
 export async function repoOf(folder: string): Promise<Repo | undefined> {
   if (!existsSync(folder)) return undefined;
+  // One git asks it all: on Windows, starting a process holds up the server for several
+  // milliseconds, and the server asks this of every project as it starts. The commit comes
+  // before `--abbrev-ref`, which names the branch for every HEAD after it, or prints HEAD when
+  // none is checked out.
   const where = await run(folder, [
     "rev-parse",
     "--show-toplevel",
     "--absolute-git-dir",
     "--show-prefix",
+    "HEAD",
+    "--abbrev-ref",
+    "HEAD",
   ]);
-  if (where.code !== 0) return undefined;
-  const [root = "", gitDir = "", prefix = ""] = where.stdout.split(/\r?\n/);
-  const [branch, head] = await Promise.all([
-    run(folder, ["symbolic-ref", "--quiet", "--short", "HEAD"]),
-    run(folder, ["rev-parse", "--verify", "--quiet", "HEAD"]),
-  ]);
-  return {
-    root: resolve(root),
-    gitDir: resolve(gitDir),
-    prefix,
-    ...(branch.code === 0 && branch.stdout.trim() ? { branch: branch.stdout.trim() } : {}),
-    ...(head.code === 0 && head.stdout.trim() ? { head: head.stdout.trim() } : {}),
-  };
+  const [root = "", gitDir = "", prefix = "", head = "", ref = ""] = where.stdout.split(/\r?\n/);
+  // Outside a repository git prints nothing. In one with no commits yet, it prints the folders
+  // and then fails on HEAD, and only `symbolic-ref` can name the branch.
+  if (!root || !gitDir) return undefined;
+  const repo: Repo = { root: resolve(root), gitDir: resolve(gitDir), prefix };
+  if (where.code !== 0) {
+    const branch = await run(folder, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    if (branch.code === 0 && branch.stdout.trim()) repo.branch = branch.stdout.trim();
+    return repo;
+  }
+  if (ref && ref !== "HEAD") repo.branch = ref;
+  if (head) repo.head = head;
+  return repo;
 }
 
 /** The branches a repository has. */
