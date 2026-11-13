@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { Thread } from "@dodocode/protocol";
 
-import { testApp, type TestApp } from "./test-app";
+import { testApp, type FakeConversation, type TestApp } from "./test-app";
 
 let t: TestApp;
 
@@ -168,5 +168,34 @@ describe("reviews", { timeout: 30_000 }, () => {
       return messages[1];
     });
     expect(sent).toContain("violation: b.txt is empty");
+  });
+});
+
+/** Gives the agent a conversation `id` it had in Claude Code, in `cwd`. */
+function hadConversation(id: string, cwd: string, extra: Partial<FakeConversation> = {}): void {
+  t.agent.elsewhere.push({
+    id,
+    title: `Conversation ${id}`,
+    cwd,
+    app: "Claude Code",
+    updatedAt: Date.now() - 60_000,
+    said: `Asked in ${id}`,
+    ...extra,
+  });
+}
+
+/** Brings in the Claude Code conversation `sessionId`. */
+function bringIn(sessionId: string, mode: "same" | "copy"): Promise<Thread> {
+  return t.call("sessions.import", { provider: "claude", sessionId, mode });
+}
+
+describe("bringing in a conversation from another app", { timeout: 30_000 }, () => {
+  test("one that can't be brought in leaves no copy in the other app", async () => {
+    // A file where its folder was, so it can't be added as a project.
+    const file = join(t.dir, "notes.txt");
+    writeFileSync(file, "");
+    hadConversation("s1", file);
+    await expect(bringIn("s1", "copy")).rejects.toThrow(/is not a folder\.$/);
+    expect(t.agent.elsewhere.map((conversation) => conversation.id)).toEqual(["s1"]);
   });
 });
