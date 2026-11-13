@@ -33,11 +33,6 @@ function readSessions(): Promise<SessionListing> {
   return reading;
 }
 
-/** Reads the listing ahead, so the palette has it when the person goes looking. */
-export function readSessionsAhead(): void {
-  if (!fresh()) readSessions().catch(() => undefined);
-}
-
 /**
  * Every conversation there is to bring in. The last listing shows at once, and is read again
  * when it is old.
