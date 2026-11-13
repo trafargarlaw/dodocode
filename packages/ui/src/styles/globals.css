@@ -11,6 +11,11 @@
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: "Geist Variable", sans-serif;
+  /* Key caps on Windows. Geist has no ↵ ⌦ ⇥ ⌫ ␣, and Windows draws them in Cambria Math and Segoe
+     UI Symbol. Named here, in the order that keeps each symbol in the font it had, the page goes
+     to them straight away: left to find them itself, it first opens a dozen other fonts, some of
+     them tens of megabytes, and the first menu to show such a key waits about 50ms for them. */
+  --font-keys-windows: "Geist Variable", Arial, "Cambria Math", "Segoe UI Symbol", sans-serif;
   --color-primary-ink: var(--primary-ink);
   --color-sidebar-selected: var(--sidebar-selected);
   --color-sidebar-muted-foreground: var(--sidebar-muted-foreground);

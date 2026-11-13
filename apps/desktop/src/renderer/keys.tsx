@@ -9,6 +9,9 @@ import { Kbd } from "@dodocode/ui/components/kbd";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@dodocode/ui/components/tooltip";
 import { cn } from "@dodocode/ui/lib/utils";
 
+/** The key caps' font on Windows: it names the fonts that draw the keys' symbols there. */
+const KEYS_FONT = window.dodocode.platform === "win32" ? "font-keys-windows" : undefined;
+
 /** A hotkey as the platform writes it: one key cap per step, so `G T` reads as two presses. */
 export function Keys({ hotkey, className }: { hotkey: Hotkey; className?: string }) {
   const format = useFormatForDisplay();
@@ -18,7 +21,10 @@ export function Keys({ hotkey, className }: { hotkey: Hotkey; className?: string
       {steps.map((step, i) => (
         // A sequence can press the same keys twice, so the step's place is its identity.
         // oxlint-disable-next-line react/no-array-index-key
-        <Kbd key={i} className={cn("h-4.5 rounded-[5px] px-1.25 text-[10.5px]", className)}>
+        <Kbd
+          key={i}
+          className={cn("h-4.5 rounded-[5px] px-1.25 text-[10.5px]", KEYS_FONT, className)}
+        >
           {format(step)}
         </Kbd>
       ))}
