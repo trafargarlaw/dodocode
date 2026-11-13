@@ -268,11 +268,25 @@ export function decided(review: Review, findingId: string, decision: "fix" | "ag
   if (finding.answer?.outcome !== "disputed") {
     throw new Error("Only a finding the agent disputed waits for your call.");
   }
+  // A second click before the first one shows would send the agent a second message.
+  if (finding.decision) throw new Error(`You decided on ${findingId} already.`);
   return {
     ...review,
     findings: review.findings.map((entry) =>
       entry.id === findingId ? { ...entry, decision } : entry,
     ),
+  };
+}
+
+/** The review without the person's call on a finding, as when asking for its fix failed. */
+export function undecided(review: Review, findingId: string): Review {
+  return {
+    ...review,
+    findings: review.findings.map((entry) => {
+      if (entry.id !== findingId) return entry;
+      const { decision: _, ...rest } = entry;
+      return rest;
+    }),
   };
 }
 

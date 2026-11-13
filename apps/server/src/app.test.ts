@@ -127,4 +127,26 @@ describe("reviews", { timeout: 30_000 }, () => {
       note: "It needs none.",
     });
   });
+
+  test("a fix asked for anyway that couldn't be sent is undone, and can be asked again", async () => {
+    const task = await taskInReview();
+    t.agent.worker = (host, message) => {
+      host.answerFindings([
+        { id: findingIn(message.text), outcome: "disputed", note: "Intended." },
+      ]);
+    };
+    const { reviewId, findingId } = await reviewFinding(task.id, "b.txt is empty");
+    t.agent.worker = () => {};
+    const mend = breakWorktree(task);
+    const decide = { reviewId, findingId, decision: "fix" } as const;
+    await expect(t.call("review.decide", decide)).rejects.toThrow(/^Its worktree is gone/);
+    expect((await t.thread(reviewId)).review!.findings[0]!.decision).toBeUndefined();
+
+    mend();
+    await t.call("review.decide", decide);
+    expect((await t.thread(reviewId)).review!.findings[0]!.decision).toBe("fix");
+    expect((await t.messages(task.id)).at(-1)).toMatch(
+      new RegExp(`^I read why you left ${findingId} as it is, and I want it fixed anyway`),
+    );
+  });
 });
