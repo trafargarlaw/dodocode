@@ -144,6 +144,10 @@ export class App implements ThreadContext {
   private found = new Map<string, OutsideSession>();
   /** Conversations being brought in, so two asks at once bring in one thread. */
   private bringing = new Map<string, Promise<Thread>>();
+  /** Set when the app stops. It then starts no more work of its own. */
+  private stopped = false;
+  /** Work the app started on its own, such as reading git, which stopping waits for. */
+  private background = new Set<Promise<void>>();
 
   /** `providers` are the agents it runs. A test gives its own. */
   constructor(
@@ -184,7 +188,9 @@ export class App implements ThreadContext {
       }
     }
     void this.refreshProviders();
-    for (const project of this.projects.values()) void this.refreshGit(project.id);
+    for (const project of this.projects.values()) {
+      this.inBackground(() => this.refreshGit(project.id));
+    }
     log(
       "app",
       `data in ${this.dataDir}: ${this.projects.size} projects, ${this.threads.size} threads`,
@@ -192,10 +198,22 @@ export class App implements ThreadContext {
   }
 
   async dispose(): Promise<void> {
+    this.stopped = true;
     for (const { watcher } of this.gitWatchers.values()) watcher.close();
     this.gitWatchers.clear();
+    // What that work still finds is saved before the store closes.
+    await Promise.allSettled(this.background);
     await Promise.all([...this.runtimes.values()].map((runtime) => runtime.dispose()));
     this.store.close();
+  }
+
+  /** Runs work the app starts on its own, unless it has stopped. Stopping waits for it. */
+  private inBackground(work: () => Promise<void>): void {
+    if (this.stopped) return;
+    const running = work()
+      .catch((error: unknown) => log("app", "work in the background failed", errorText(error)))
+      .finally(() => this.background.delete(running));
+    this.background.add(running);
   }
 
   // Clients
@@ -220,10 +238,10 @@ export class App implements ThreadContext {
       this.filesChanged(item.threadId);
     }
     if (item?.type === "turn_end") {
-      void this.countWork(item.threadId);
+      this.inBackground(() => this.countWork(item.threadId));
       // After the turn has ended, so what this writes comes after it.
       const status = item.status;
-      setImmediate(() => this.reviewEnded(item.threadId, status));
+      setImmediate(() => this.inBackground(() => this.reviewEnded(item.threadId, status)));
     }
   }
 
@@ -422,7 +440,7 @@ export class App implements ThreadContext {
     if (after.kind !== "main" || after.task?.status !== "review") return;
     if (!before || before.task?.status === "review") return;
     if (!this.settings.review.auto || after.task.autoReviewed) return;
-    setImmediate(() => void this.autoReview(after.id));
+    setImmediate(() => this.inBackground(() => this.autoReview(after.id)));
   }
 
   private async autoReview(taskId: string): Promise<void> {
@@ -571,7 +589,7 @@ export class App implements ThreadContext {
    * After a review's turn: its findings go to the task's agent, once. A review that ended
    * without reporting says so.
    */
-  private reviewEnded(threadId: string, status: string): void {
+  private async reviewEnded(threadId: string, status: string): Promise<void> {
     const runtime = this.runtimes.get(threadId);
     const thread = runtime?.thread;
     const review = thread?.review;
@@ -597,7 +615,7 @@ export class App implements ThreadContext {
       );
       return;
     }
-    this.sendToTask(task.thread.id, {
+    await this.sendToTask(task.thread.id, {
       text: findingsMessage(review),
       images: [],
       app: { kind: "findings", reviewId: thread.id },
@@ -659,7 +677,8 @@ export class App implements ThreadContext {
     }
     const current = this.projects.get(projectId);
     if (!current) return;
-    this.watchGit(projectId, repo?.gitDir);
+    // A watcher made once the app stopped would be left behind.
+    if (!this.stopped) this.watchGit(projectId, repo?.gitDir);
     const git = repo ? (repo.branch ? { branch: repo.branch } : {}) : undefined;
     if (JSON.stringify(git) === JSON.stringify(current.git)) return;
     const { git: _old, ...rest } = current;
@@ -681,7 +700,7 @@ export class App implements ThreadContext {
       const watcher = watch(gitDir, (_event, file) => {
         if (file !== "HEAD") return;
         clearTimeout(timer);
-        timer = setTimeout(() => void this.refreshGit(projectId), 150);
+        timer = setTimeout(() => this.inBackground(() => this.refreshGit(projectId)), 150);
       });
       watcher.on("error", () => {
         watcher.close();
@@ -1419,7 +1438,7 @@ export class App implements ThreadContext {
       } finally {
         this.merging.delete(threadId);
       }
-      void this.refreshGit(project.id);
+      this.inBackground(() => this.refreshGit(project.id));
       return { merged: true, thread: runtime.thread };
     },
 
