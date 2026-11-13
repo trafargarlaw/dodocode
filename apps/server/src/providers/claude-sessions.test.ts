@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { Item, Question } from "@dodocode/protocol";
 
 import { History } from "../history";
-import { answersOf, ClaudeReader, type Line } from "./claude-sessions";
+import { answersOf, ClaudeReader, parseLines, type Line } from "./claude-sessions";
 
 /** Builds a session's lines, each the child of the one before unless it names its parent. */
 function session() {
@@ -256,6 +256,34 @@ describe("reading a Claude conversation", () => {
     ]);
     const tool = items.find((item) => item.type === "tool");
     expect(tool?.type === "tool" && tool.childThreadId).toBe(child.threadId);
+  });
+
+  // A crash cuts off the line being written. The app may go on writing on the same line after.
+  test.each([
+    { case: "the next line on its own", joint: "\n" },
+    { case: "the next line written on after it", joint: "" },
+  ])("a line cut off hides nothing before it, with $case", ({ joint }) => {
+    const s = session();
+    s.prompt("first");
+    s.reply([text("one")]);
+    s.prompt("second");
+    s.reply([text("two")]);
+    s.prompt("third");
+    s.reply([text("three")]);
+    const raw = s.lines.map((line) => JSON.stringify(line));
+    const file = [...raw.slice(0, 3), raw[3]!.slice(0, 40) + joint + raw[4], raw[5]].join("\n");
+
+    expect(shown(read(parseLines(file)).items)).toEqual([
+      "user: first",
+      "assistant: one",
+      "end: completed",
+      "user: second",
+      "notice: A line of Claude Code's file couldn't be read, so something here may be missing.",
+      "end: interrupted",
+      "user: third",
+      "assistant: three",
+      "end: completed",
+    ]);
   });
 });
 

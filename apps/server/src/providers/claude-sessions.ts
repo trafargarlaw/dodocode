@@ -78,41 +78,93 @@ function projectsDir(): string {
   return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
 }
 
+/** The type of the line that stands in for one that couldn't be read. */
+export const UNREAD = "unread";
+
+/**
+ * A session's lines, in the file's order. A line cut off as it was written, by a crash, is
+ * kept as an `UNREAD` line. The app may have gone on writing after it, on the same line.
+ */
 export function parseLines(text: string): Line[] {
   const lines: Line[] = [];
   for (const raw of text.split("\n")) {
     if (!raw.trim()) continue;
-    try {
-      lines.push(JSON.parse(raw) as Line);
-    } catch {
-      // A line cut off as the file was written.
+    const line = parsed(raw);
+    if (line) {
+      lines.push(line);
+      continue;
     }
+    lines.push({ type: UNREAD });
+    const after = lineAfterCut(raw);
+    if (after) lines.push(after);
   }
   return lines;
+}
+
+function parsed(raw: string): Line | undefined {
+  try {
+    return JSON.parse(raw) as Line;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A whole line written on after one that was cut off: the first object that reads to the end. */
+function lineAfterCut(raw: string): Line | undefined {
+  for (let at = raw.indexOf('{"', 1); at > 0; at = raw.indexOf('{"', at + 1)) {
+    const line = parsed(raw.slice(at));
+    if (line) return line;
+  }
+  return undefined;
 }
 
 /**
  * The conversation as it stands: from its latest message back to its first, by each line's
  * parent. Lines on branches left behind, as when a message was edited and sent again, are not
  * in it. A compaction's line has no parent and names the line it follows instead.
+ *
+ * When a parent is missing and a line before it couldn't be read, that line was most likely the
+ * parent. The chain then takes in the `UNREAD` line and goes on from the line before it in the
+ * file.
  */
 export function chainOf(lines: readonly Line[], sidechain = false): Line[] {
-  const byUuid = new Map<string, Line>();
-  let leaf: Line | undefined;
-  for (const line of lines) {
-    if (line.uuid) byUuid.set(line.uuid, line);
+  const byUuid = new Map<string, number>();
+  let leaf: number | undefined;
+  lines.forEach((line, index) => {
+    if (line.uuid) byUuid.set(line.uuid, index);
     const message = line.type === "user" || line.type === "assistant";
-    if (message && Boolean(line.isSidechain) === sidechain) leaf = line;
-  }
+    if (message && Boolean(line.isSidechain) === sidechain) leaf = index;
+  });
+  const inChain = (line: Line) =>
+    line.uuid !== undefined && Boolean(line.isSidechain) === sidechain;
   const chain: Line[] = [];
   const seen = new Set<string>();
-  for (let line = leaf; line?.uuid && !seen.has(line.uuid);) {
+  let index = leaf;
+  while (index !== undefined) {
+    const line: Line = lines[index]!;
+    if (line.type === UNREAD) {
+      chain.push(line);
+      index = lastBefore(lines, index, inChain);
+      continue;
+    }
+    if (!line.uuid || seen.has(line.uuid)) break;
     seen.add(line.uuid);
     chain.push(line);
     const parent = line.parentUuid ?? line.logicalParentUuid;
-    line = parent ? byUuid.get(parent) : undefined;
+    if (!parent) break;
+    index = byUuid.get(parent) ?? lastBefore(lines, index, (other) => other.type === UNREAD);
   }
   return chain.toReversed();
+}
+
+/** The index of the nearest line before `index` that `matches`. */
+function lastBefore(
+  lines: readonly Line[],
+  index: number,
+  matches: (line: Line) => boolean,
+): number | undefined {
+  for (let at = index - 1; at >= 0; at -= 1) if (matches(lines[at]!)) return at;
+  return undefined;
 }
 
 /** What the person's line says, once the app's own wrapping is taken off. */
@@ -470,6 +522,13 @@ export class ClaudeReader implements TranscriptHooks {
           if (writer.inTurn) lastAt = writer.clock.at;
           break;
         }
+        case UNREAD:
+          writer.add({
+            type: "notice",
+            level: "warning",
+            text: "A line of Claude Code's file couldn't be read, so something here may be missing.",
+          });
+          break;
         default:
           break;
       }
