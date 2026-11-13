@@ -1,6 +1,7 @@
 // Where a conversation brought in from another app belongs, and what it carries on with.
 
-import { isAbsolute, relative, resolve } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, parse, relative, resolve } from "node:path";
 
 import type { ModelOption, Project } from "@dodocode/protocol";
 
@@ -23,6 +24,50 @@ export function projectHolding(
     if (!found || holds(found.path, project.path, platform)) found = project;
   }
   return found;
+}
+
+/** What git says of the folder a conversation worked in, when a repository holds it. */
+export interface Checkout {
+  /** The checkout's top folder. */
+  root: string;
+  /** The repository's main checkout: `root`, unless the folder is in a worktree. */
+  main: string;
+}
+
+/** Where a conversation goes: in a project there is, in a folder added as one, or in none. */
+export type Placing = { project: Project } | { add: string } | undefined;
+
+/**
+ * The project a conversation goes in, by the folder it worked in:
+ * 1. the nearest project in the same checkout that holds the folder;
+ * 2. in a worktree, the project that holds the same folder in the main checkout, so another
+ *    app's worktree goes with its repository's project;
+ * 3. the nearest project that holds the folder from outside its checkout;
+ * 4. otherwise a new project: the repository's main checkout or, outside one, the folder.
+ *    Never the home folder, a folder that holds it, or a drive's root. Those hold so much that
+ *    every conversation after would go in them.
+ */
+export function placeFor(
+  projects: readonly Project[],
+  cwd: string,
+  checkout: Checkout | undefined,
+  home = homedir(),
+  platform = process.platform,
+): Placing {
+  const inside = (folder: string, path: string) =>
+    projectHolding(
+      projects.filter((project) => holds(folder, project.path, platform)),
+      path,
+      platform,
+    );
+  const found =
+    (checkout && inside(checkout.root, cwd)) ??
+    (checkout && inside(checkout.main, join(checkout.main, relative(checkout.root, cwd)))) ??
+    projectHolding(projects, cwd, platform);
+  if (found) return { project: found };
+  const folder = checkout?.main ?? cwd;
+  const root = parse(resolve(folder)).root === resolve(folder);
+  return root || holds(folder, home, platform) ? undefined : { add: folder };
 }
 
 /**
