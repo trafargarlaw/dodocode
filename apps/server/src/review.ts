@@ -228,30 +228,37 @@ function grouped(findings: readonly Finding[]): [string, Finding[]][] {
 }
 
 /**
- * The review with the agent's answers in. An answer replaces one given before, and a fix
- * settles a dispute the person sent back. Throws when an id is no finding of the review's.
+ * The reviews whose findings went to the task's agent, with its answers in, each in the review
+ * its finding is in. A review no answer is for comes back as it was. An answer replaces one
+ * given before, and a fix settles a dispute the person sent back. Throws when an id is a
+ * finding of none of them.
  */
-export function answered(review: Review, answers: readonly FindingAnswerRequest[]): Review {
+export function answered(
+  reviews: readonly Review[],
+  answers: readonly FindingAnswerRequest[],
+): Review[] {
   const byId = new Map(answers.map((answer) => [answer.id, answer]));
-  const unknown = [...byId.keys()].filter(
-    (id) => !review.findings.some((finding) => finding.id === id),
-  );
+  const ids = reviews.flatMap((review) => review.findings.map((finding) => finding.id));
+  const unknown = [...byId.keys()].filter((id) => !ids.includes(id));
   if (unknown.length > 0) {
     throw new Error(
-      `${unknown.join(", ")} ${unknown.length === 1 ? "is not a finding" : "are not findings"} of this review. Its findings are ${review.findings.map((finding) => finding.id).join(", ")}.`,
+      `${unknown.join(", ")} ${unknown.length === 1 ? "is not a finding" : "are not findings"} of a review sent to you. Their findings are ${ids.join(", ")}.`,
     );
   }
-  return {
-    ...review,
-    findings: review.findings.map((finding) => {
-      const answer = byId.get(finding.id);
-      if (!answer) return finding;
-      const { decision, ...rest } = finding;
-      // A finding the person sent back keeps their call once it's fixed; a new dispute asks again.
-      const kept = decision === "fix" && answer.outcome === "fixed" ? { decision } : {};
-      return { ...rest, ...kept, answer: { outcome: answer.outcome, note: answer.note.trim() } };
-    }),
-  };
+  return reviews.map((review) => {
+    if (!review.findings.some((finding) => byId.has(finding.id))) return review;
+    return {
+      ...review,
+      findings: review.findings.map((finding) => {
+        const answer = byId.get(finding.id);
+        if (!answer) return finding;
+        const { decision, ...rest } = finding;
+        // A finding the person sent back keeps their call once it's fixed; a new dispute asks again.
+        const kept = decision === "fix" && answer.outcome === "fixed" ? { decision } : {};
+        return { ...rest, ...kept, answer: { outcome: answer.outcome, note: answer.note.trim() } };
+      }),
+    };
+  });
 }
 
 /** The review with the person's call on a disputed finding. */

@@ -45,6 +45,21 @@ async function taskInReview(): Promise<Thread> {
   return await t.call("task.move", { threadId: task.id, status: "review" });
 }
 
+/** Runs a review that finds one thing, and waits until the task's agent has had it. */
+async function reviewFinding(
+  taskId: string,
+  summary: string,
+): Promise<{ reviewId: string; findingId: string }> {
+  const before = (await t.messages(taskId)).length;
+  t.agent.reviewer = (host) => {
+    host.reportFindings([{ group: "Standards", kind: "violation", summary }]);
+  };
+  const review = await t.call("review.start", { threadId: taskId });
+  await eventually(async () => expect(await t.messages(taskId)).toHaveLength(before + 1));
+  await idle(taskId);
+  return { reviewId: review.id, findingId: (await t.thread(review.id)).review!.findings[0]!.id };
+}
+
 /**
  * Takes away a task's worktree and its branch, so its folder can't be made again and nothing
  * can be sent to it. Gives back what mends it.
@@ -56,6 +71,11 @@ function breakWorktree(task: Thread): () => void {
   t.git("worktree", "prune");
   t.git("branch", "-D", branch);
   return () => t.git("branch", branch, "main");
+}
+
+/** The id of the first finding in a findings message. */
+function findingIn(message: string): string {
+  return /\*\*(f\w+)\*\*/.exec(message)![1]!;
 }
 
 describe("reviews", { timeout: 30_000 }, () => {
@@ -86,5 +106,25 @@ describe("reviews", { timeout: 30_000 }, () => {
       return messages[1];
     });
     expect(sent).toContain("violation: b.txt is empty");
+  });
+
+  test("an answer goes to the review its finding is in, though a later review came since", async () => {
+    const task = await taskInReview();
+    const first = await reviewFinding(task.id, "b.txt is empty");
+    t.agent.worker = (host, message) => {
+      host.answerFindings([
+        { id: first.findingId, outcome: "fixed", note: "Filled it in." },
+        { id: findingIn(message.text), outcome: "disputed", note: "It needs none." },
+      ]);
+    };
+    const second = await reviewFinding(task.id, "b.txt has no heading");
+    expect((await t.thread(first.reviewId)).review!.findings[0]!.answer).toEqual({
+      outcome: "fixed",
+      note: "Filled it in.",
+    });
+    expect((await t.thread(second.reviewId)).review!.findings[0]!.answer).toEqual({
+      outcome: "disputed",
+      note: "It needs none.",
+    });
   });
 });

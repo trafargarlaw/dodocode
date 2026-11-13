@@ -151,7 +151,7 @@ export interface SessionHost {
   readonly reviewing: boolean;
   /** Keeps what a reviewer found. Returns what to tell it; throws when it can't. */
   reportFindings(findings: FindingReport[]): string;
-  /** Records the task's agent's answers to its latest review. Returns what to tell it. */
+  /** Records the task's agent's answers to the reviews sent to it. Returns what to tell it. */
   answerFindings(answers: FindingAnswerRequest[]): string;
   /**
    * Sets the Markdown file the project's work is reviewed by, or the built-in way with `null`,
