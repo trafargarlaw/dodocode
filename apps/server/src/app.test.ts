@@ -282,6 +282,16 @@ describe("bringing in a conversation from another app", { timeout: 30_000 }, () 
         branch: "other",
       });
     });
+
+    // Switched outside dodocode, it shows once the thread is opened.
+    t.git("-C", worktree, "switch", "-q", "-c", "third");
+    await t.call("thread.open", { threadId: there.id });
+    await eventually(async () => {
+      expect((await t.thread(there.id)).origin!.checkout).toEqual({
+        path: worktree,
+        branch: "third",
+      });
+    });
   });
 
   test("its images are kept once it is brought in, and not when that fails", async () => {
