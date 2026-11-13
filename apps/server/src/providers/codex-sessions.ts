@@ -204,10 +204,8 @@ export class CodexReader {
     for (const childId of (item.receiverThreadIds ?? []) as string[]) {
       if (this.read.has(childId)) continue;
       const child = this.history.child(writer, item.id, firstLine(prompt) || "Subagent");
-      const entry = this.history.children.find((candidate) => candidate.writer === child);
       try {
-        const status = await this.thread(childId, child, prompt);
-        if (entry && status === "failed") entry.failed = true;
+        await this.thread(childId, child, prompt);
       } catch {
         // Its thread is gone from Codex: the tool call still shows what it was asked.
         if (prompt) child.add({ type: "user", text: prompt, images: [] });

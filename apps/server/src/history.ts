@@ -150,7 +150,6 @@ export interface HistoryChild {
   /** That tool call's item. */
   parentItemId: string;
   title: string;
-  failed: boolean;
 }
 
 /** A conversation being read into a thread, with its subagents' threads. */
@@ -172,7 +171,7 @@ export class History {
     const writer = new HistoryWriter(newId(), { at: parent.clock.at });
     const parentItemId = parent.get(toolId)?.id ?? toolId;
     parent.update(toolId, { childThreadId: writer.threadId });
-    this.children.push({ writer, parentId: parent.threadId, parentItemId, title, failed: false });
+    this.children.push({ writer, parentId: parent.threadId, parentItemId, title });
     return writer;
   }
 

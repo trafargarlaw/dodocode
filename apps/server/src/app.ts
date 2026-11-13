@@ -1664,7 +1664,6 @@ export class App implements ThreadContext {
   }
 }
 
-/** What the person wrote in a thread, oldest first: their messages, not the app's. */
 /** What shows where a conversation brought in from another app carries on in dodocode. */
 function broughtNotice(app: string, mode: OriginMode, place: SessionPlace): string {
   if (place.folderGone) {
@@ -1719,6 +1718,7 @@ function span(list: readonly Item[], fallback: number): { first: number; last: n
       };
 }
 
+/** What the person wrote in a thread, oldest first: their messages, not the app's. */
 function personsMessages(items: readonly Item[]): string[] {
   return items.flatMap((item) => (item.type === "user" && !item.app ? [item.text] : []));
 }
