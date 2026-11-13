@@ -1,13 +1,22 @@
 // The server's state and the methods clients call. Transport lives in main.ts.
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  watch,
+  writeFileSync,
+} from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
-import { addedPrompt, folderNameProblem } from "@dodocode/protocol";
+import { addedPrompt, disputesWaiting, folderNameProblem } from "@dodocode/protocol";
 import type {
   ImageRef,
+  Item,
   Method,
   Params,
   Project,
@@ -38,14 +47,30 @@ import {
   removeWorktree,
   repoOf,
   restoreWorktree,
+  startOf,
 } from "./git";
 import { expandPath, listFolders } from "./folders";
 import { ClaudeProvider } from "./providers/claude";
 import { CodexProvider } from "./providers/codex";
-import type { IdeaRequest, PageRequest, Provider } from "./providers/types";
+import type {
+  FindingAnswerRequest,
+  FindingReport,
+  IdeaRequest,
+  PageRequest,
+  Provider,
+} from "./providers/types";
+import {
+  answered,
+  decided,
+  findingsMessage,
+  fixAnywayMessage,
+  reported,
+  reviewPrompt,
+  type ReviewBrief,
+} from "./review";
 import { Store } from "./store";
-import { itemFrom, merged, moved, promoted, split, todoTask } from "./tasks";
-import { ThreadRuntime, type ThreadContext } from "./thread";
+import { itemFrom, merged, moved, promoted, reopened, split, todoTask } from "./tasks";
+import { ThreadRuntime, type ThreadContext, type ThreadMessage } from "./thread";
 import { errorText, log, newId } from "./util";
 import { fileInFolder, imageType, pageFileType } from "./web-files";
 
@@ -71,7 +96,13 @@ const DEFAULT_SETTINGS: Settings = {
   defaults: { provider: "claude", model: "", effort: "", access: "full" },
   lastByProvider: {},
   workspace: "worktree",
+  review: { auto: false },
 };
+
+/** The most images of the task's a reviewer is sent with what it is asked. */
+const REVIEW_IMAGES = 8;
+/** The most of a project's own way to review a reviewer is sent. */
+const REVIEW_METHOD_LIMIT = 40_000;
 
 export class App implements ThreadContext {
   readonly store: Store;
@@ -87,6 +118,8 @@ export class App implements ThreadContext {
   private preparing = new Map<string, Promise<void>>();
   /** Threads whose worktree is being merged. No turn starts until that's done. */
   private merging = new Set<string>();
+  /** Tasks a review is being started for, so two starts at once make one. */
+  private startingReview = new Set<string>();
   private providers = new Map<ProviderId, Provider>();
   private providerInfo = new Map<ProviderId, ProviderInfo>();
   /** Each provider's own slash commands. */
@@ -156,7 +189,11 @@ export class App implements ThreadContext {
   }
 
   emit(event: ServerEvent, threadId?: string): void {
-    if (event.type === "thread") this.threads.set(event.thread.id, event.thread);
+    if (event.type === "thread") {
+      const before = this.threads.get(event.thread.id);
+      this.threads.set(event.thread.id, event.thread);
+      this.reachedReview(before, event.thread);
+    }
     for (const client of this.clients) {
       if (threadId && !client.open.has(threadId)) continue;
       client.send(event);
@@ -165,16 +202,35 @@ export class App implements ThreadContext {
     if (item?.type === "tool" && item.kind === "edit" && item.status === "done") {
       this.filesChanged(item.threadId);
     }
-    if (item?.type === "turn_end") void this.countWork(item.threadId);
+    if (item?.type === "turn_end") {
+      void this.countWork(item.threadId);
+      // After the turn has ended, so what this writes comes after it.
+      const status = item.status;
+      setImmediate(() => this.reviewEnded(item.threadId, status));
+    }
   }
 
-  /** A chat whose agent, or one of its subagents, changed files becomes a task. */
+  /**
+   * A chat whose agent, or one of its subagents, changed files becomes a task. A task in review
+   * goes back to In progress: its work changed after it was put there.
+   */
   private filesChanged(threadId: string): void {
     let root = this.threads.get(threadId);
-    while (root?.parentId) root = this.threads.get(root.parentId);
+    while (root?.parentId) {
+      // A reviewer only reads; whatever it ran changes nothing about the task.
+      if (root.kind === "review") return;
+      root = this.threads.get(root.parentId);
+    }
     if (!root) return;
     const runtime = this.runtime(root.id);
-    const next = promoted(runtime.thread, Date.now());
+    const now = Date.now();
+    const back = reopened(runtime.thread, now);
+    if (back) {
+      runtime.replace(back);
+      runtime.note("Changed files while in review, so it's back in In progress.");
+      return;
+    }
+    const next = promoted(runtime.thread, now);
     if (!next) return;
     runtime.replace(next);
     runtime.note("Changed files, so this chat became a task.");
@@ -287,6 +343,255 @@ export class App implements ThreadContext {
       "backlog",
     );
     return this.adoptThread({ ...thread, task: { ...thread.task!, suggestedBy: root.id } }).thread;
+  }
+
+  reportFindings(from: Thread, findings: FindingReport[]): string {
+    const runtime = this.runtime(from.id);
+    const review = runtime.thread.review;
+    if (!review) throw new Error("Only a review reports findings.");
+    runtime.replace({ ...runtime.thread, review: reported(review, findings, Date.now()) });
+    const kept =
+      findings.length === 0
+        ? "Noted that you found nothing."
+        : `Kept ${findings.length} ${findings.length === 1 ? "finding" : "findings"}.`;
+    return `${kept} When your turn ends, they go to the agent that did the work, which answers each one. Now reply with your report for the person.`;
+  }
+
+  answerFindings(from: Thread, answers: FindingAnswerRequest[]): string {
+    const task = this.rootOf(from);
+    const latest = this.reviewsOf(task.id).findLast(
+      (review) => review.review?.sentAt !== undefined,
+    );
+    if (!latest?.review) {
+      throw new Error("No review's findings were sent to you, so there is nothing to answer.");
+    }
+    const runtime = this.runtime(latest.id);
+    const review = answered(latest.review, answers);
+    runtime.replace({ ...runtime.thread, review });
+    const open = review.findings.filter((finding) => !finding.answer).map((finding) => finding.id);
+    return [
+      "Recorded your answers, which the person sees with the findings.",
+      open.length > 0 ? `Still to answer: ${open.join(", ")}.` : "",
+      disputesWaiting(review).length > 0
+        ? "The person decides on what you disputed. If they want one fixed anyway, you'll hear."
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  setReviewInstructions(from: Thread, path: string | null): string {
+    const root = this.rootOf(from);
+    if (!root.projectId) throw new Error("This conversation has no project to set it for.");
+    const project = this.setProjectReview(root.projectId, path, [this.workDir(root)]);
+    return path
+      ? `Reviews of ${project.name} follow ${path} from now on. The app still gives the reviewer the changes and the spec, and has it report findings.`
+      : `Reviews of ${project.name} follow the built-in way again.`;
+  }
+
+  // Reviews
+
+  /** The reviews of a task, oldest first. */
+  private reviewsOf(taskId: string): Thread[] {
+    return [...this.threads.values()]
+      .filter((thread) => thread.kind === "review" && thread.parentId === taskId)
+      .toSorted((a, b) => a.createdAt - b.createdAt);
+  }
+
+  /** A task that reached In review gets reviewed, the first time, when the person wants that. */
+  private reachedReview(before: Thread | undefined, after: Thread): void {
+    if (after.kind !== "main" || after.task?.status !== "review") return;
+    if (!before || before.task?.status === "review") return;
+    if (!this.settings.review.auto || after.task.autoReviewed) return;
+    setImmediate(() => void this.autoReview(after.id));
+  }
+
+  private async autoReview(taskId: string): Promise<void> {
+    const runtime = this.runtimes.get(taskId);
+    const task = runtime?.thread.task;
+    if (!runtime || task?.status !== "review" || task.autoReviewed) return;
+    try {
+      await this.startReview(taskId, true);
+    } catch (error) {
+      runtime.note(`It wasn't reviewed: ${errorText(error)}`);
+      return;
+    }
+    const current = runtime.thread.task;
+    if (current) runtime.replace({ ...runtime.thread, task: { ...current, autoReviewed: true } });
+  }
+
+  /**
+   * Starts a fresh agent reviewing a task's work, in a thread under the task. While one runs,
+   * gives back that one.
+   */
+  private async startReview(taskId: string, auto: boolean): Promise<Thread> {
+    const task = this.runtime(taskId).thread;
+    if (task.kind !== "main" || !task.task || !task.projectId) {
+      throw new Error("Only a task's work can be reviewed.");
+    }
+    if (task.startedAt === undefined) throw new Error("It hasn't started, so there's no work yet.");
+    if (task.worktree?.mergedAt !== undefined) throw new Error("Its work is merged already.");
+    const running = this.reviewsOf(taskId).find((review) => this.runtimes.get(review.id)?.running);
+    if (running) return running;
+    if (this.startingReview.has(taskId)) throw new Error("A review of it is starting already.");
+    this.startingReview.add(taskId);
+    try {
+      await this.prepareWorkspace(taskId);
+      const project = this.project(task.projectId);
+      const where = await this.reviewBase(task, project);
+      const count = await countChanges(where.folder, where.base);
+      if (count.files === 0) {
+        throw new Error("It has changed nothing yet, so there's nothing to review.");
+      }
+      const method = this.reviewMethod(project, where.folder);
+      const items = this.runtime(taskId).items();
+      const brief: ReviewBrief = {
+        title: task.title,
+        base: where.base,
+        baseLabel: where.label,
+        ...(task.worktree ? { branch: task.worktree.branch } : {}),
+        covers: task.task.covers,
+        messages: personsMessages(items),
+        ...(method.found ? { method: method.found } : {}),
+      };
+      const now = Date.now();
+      const reviewer = this.settings.review.model ?? task.settings;
+      const runtime = this.adoptThread({
+        id: newId(),
+        projectId: task.projectId,
+        parentId: task.id,
+        kind: "review",
+        title: `Review: ${task.title}`,
+        status: "idle",
+        settings: {
+          provider: reviewer.provider,
+          model: reviewer.model,
+          effort: reviewer.effort,
+          access: "full",
+        },
+        createdAt: now,
+        updatedAt: now,
+        activityAt: now,
+        review: {
+          base: where.base,
+          baseLabel: where.label,
+          ...(method.found ? { instructions: method.found.path } : {}),
+          ...(auto ? { auto } : {}),
+          findings: [],
+        },
+      });
+      if (method.missing) {
+        runtime.note(
+          `${method.missing} isn't there, so it reviews the built-in way. Set another file in the board's review settings.`,
+        );
+      }
+      await runtime.send({
+        text: reviewPrompt(brief),
+        images: taskImages(task, items),
+        app: { kind: "review" },
+      });
+      return runtime.thread;
+    } finally {
+      this.startingReview.delete(taskId);
+    }
+  }
+
+  /** What a task's work is compared with: where its branch left the base, or its last commit. */
+  private async reviewBase(
+    task: Thread,
+    project: Project,
+  ): Promise<{ folder: string; base: string; label: string }> {
+    const worktree = task.worktree;
+    if (worktree) {
+      const base = await startOf(worktree.path, worktree.base ?? worktree.from);
+      return { folder: worktree.path, base, label: worktree.base ?? `commit ${base.slice(0, 7)}` };
+    }
+    const repo = await repoOf(project.path);
+    if (!repo) throw new Error(`${project.name} isn't in git, so there's no telling what changed.`);
+    const base = await startOf(project.path, undefined);
+    const label = repo.head
+      ? `the last commit${repo.branch ? ` on ${repo.branch}` : ""}`
+      : "an empty repository";
+    return { folder: project.path, base, label };
+  }
+
+  /**
+   * The project's own way to review, read from its file. Unset, or when the file isn't there,
+   * the built-in way; `missing` then says which file wasn't.
+   */
+  private reviewMethod(
+    project: Project,
+    folder: string,
+  ): { found?: { path: string; text: string }; missing?: string } {
+    const path = project.reviewInstructions;
+    if (!path) return {};
+    const file = instructionsFile(path, [folder, project.path]);
+    if (!file) return { missing: path };
+    return { found: { path, text: readFileSync(file, "utf8").slice(0, REVIEW_METHOD_LIMIT) } };
+  }
+
+  /** Sets how a project's work is reviewed: a Markdown file, which must be there, or `null`. */
+  private setProjectReview(projectId: string, path: string | null, folders: string[]): Project {
+    const project = this.project(projectId);
+    const { reviewInstructions: _old, ...rest } = project;
+    let next: Project = rest;
+    const wanted = path?.trim();
+    if (wanted) {
+      if (!instructionsFile(wanted, [...folders, project.path])) {
+        throw new Error(`There's no file at ${wanted}, in ${project.name} or as an absolute path.`);
+      }
+      next = { ...rest, reviewInstructions: wanted };
+    }
+    this.projects.set(projectId, next);
+    this.store.saveProject(next);
+    this.emitProjects();
+    return next;
+  }
+
+  /**
+   * After a review's turn: its findings go to the task's agent, once. A review that ended
+   * without reporting says so.
+   */
+  private reviewEnded(threadId: string, status: string): void {
+    const runtime = this.runtimes.get(threadId);
+    const thread = runtime?.thread;
+    const review = thread?.review;
+    if (!runtime || !thread?.parentId || !review || review.sentAt !== undefined) return;
+    if (review.reportedAt === undefined) {
+      if (status === "completed") {
+        runtime.note(
+          "It ended without reporting findings, so nothing went to the task. Ask it to report them.",
+        );
+      }
+      return;
+    }
+    if (!this.threads.has(thread.parentId)) return;
+    const task = this.runtime(thread.parentId);
+    runtime.replace({ ...thread, review: { ...review, sentAt: Date.now() } });
+    if (review.findings.length === 0) {
+      task.note("A review found nothing to change.");
+      return;
+    }
+    if (task.thread.task?.status === "done") {
+      task.note(
+        "A review found things to change, but the task is done, so they stay in the review.",
+      );
+      return;
+    }
+    this.sendToTask(task.thread.id, {
+      text: findingsMessage(review),
+      images: [],
+      app: { kind: "findings", reviewId: thread.id },
+    }).catch((error: unknown) => {
+      runtime.note(`The findings couldn't go to the task: ${errorText(error)}`);
+    });
+  }
+
+  /** Sends the task's agent a message the app wrote, once its folder is ready. */
+  private async sendToTask(taskId: string, message: ThreadMessage): Promise<void> {
+    if (this.merging.has(taskId)) throw new Error("Its work is being merged.");
+    await this.prepareWorkspace(taskId);
+    await this.runtime(taskId).send(message);
   }
 
   // Helpers
@@ -724,6 +1029,11 @@ export class App implements ThreadContext {
       return null;
     },
 
+    "project.update": ({ projectId, reviewInstructions }) => {
+      if (reviewInstructions === undefined) return this.project(projectId);
+      return this.setProjectReview(projectId, reviewInstructions, []);
+    },
+
     "project.openInEditor": ({ projectId }) => {
       this.openInEditor(this.projectPath(projectId));
       return null;
@@ -841,6 +1151,11 @@ export class App implements ThreadContext {
       if (runtime.running) {
         throw new Error("The agent is still working. Wait for it to finish, or stop it first.");
       }
+      if (this.reviewsOf(threadId).some((review) => this.runtimes.get(review.id)?.running)) {
+        throw new Error(
+          "A review of it is still running. Wait for it to finish, or stop it first.",
+        );
+      }
       const project = this.project(thread.projectId);
       const repo = await repoOf(project.path);
       if (repo?.branch !== base) {
@@ -860,6 +1175,9 @@ export class App implements ThreadContext {
         // The agent's process works in the worktree, and Windows can't remove a folder a
         // process is in. A later turn starts afresh, in the project's folder.
         await runtime.forgetSession();
+        for (const review of this.reviewsOf(threadId)) {
+          await this.runtimes.get(review.id)?.forgetSession();
+        }
         let left = "";
         try {
           if (existsSync(worktree.path)) await removeWorktree(project.path, worktree.path);
@@ -939,6 +1257,21 @@ export class App implements ThreadContext {
       return this.adoptThread({ ...todo, ...kept }).thread;
     },
 
+    "review.start": ({ threadId }) => this.startReview(threadId, false),
+
+    "review.decide": async ({ reviewId, findingId, decision }) => {
+      const runtime = this.runtime(reviewId);
+      const { review, parentId } = runtime.thread;
+      if (!review || !parentId) throw new Error("That review is gone.");
+      const next = decided(review, findingId, decision);
+      runtime.replace({ ...runtime.thread, review: next });
+      const finding = next.findings.find((entry) => entry.id === findingId);
+      if (decision === "fix" && finding) {
+        await this.sendToTask(parentId, { text: fixAnywayMessage(finding), images: [] });
+      }
+      return null;
+    },
+
     "queue.remove": ({ threadId, queueId }) => {
       this.runtime(threadId).removeQueued(queueId);
       return null;
@@ -1009,4 +1342,31 @@ export class App implements ThreadContext {
     const mime = imageType(path);
     return mime && isAbsolute(path) ? { path, mime } : undefined;
   }
+}
+
+/** What the person wrote in a thread, oldest first: their messages, not the app's. */
+function personsMessages(items: readonly Item[]): string[] {
+  return items.flatMap((item) => (item.type === "user" && !item.app ? [item.text] : []));
+}
+
+/** The images a task's work rests on: what it covers, and what the person sent along the way. */
+function taskImages(task: Thread, items: readonly Item[]): ImageRef[] {
+  const images = [
+    ...(task.task?.covers.flatMap((item) => item.images ?? []) ?? []),
+    ...items.flatMap((item) => (item.type === "user" && !item.app ? item.images : [])),
+  ];
+  const unique = [...new Map(images.map((image) => [image.id, image])).values()];
+  return unique.slice(0, REVIEW_IMAGES);
+}
+
+/** Where a project's review file is: absolute, or in the first folder that has it. */
+function instructionsFile(path: string, folders: readonly string[]): string | undefined {
+  const candidates = isAbsolute(path) ? [path] : folders.map((folder) => resolve(folder, path));
+  return candidates.find((candidate) => {
+    try {
+      return statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  });
 }

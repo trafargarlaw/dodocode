@@ -8,7 +8,7 @@ import {
   type Ref,
   type UIEvent,
 } from "react";
-import { eq, useLiveQuery } from "@tanstack/react-db";
+import { and, eq, useLiveQuery } from "@tanstack/react-db";
 import {
   unstarted,
   type BackgroundJob,
@@ -23,6 +23,7 @@ import {
   Cancel01Icon,
   Clock01Icon,
   CommandLineIcon,
+  InspectCodeIcon,
   SteeringIcon,
   StopCircleIcon,
   Scissor01Icon,
@@ -61,6 +62,7 @@ import {
   setWorkspace,
   settings as settingsRows,
   splitItem,
+  startReview,
   startTask,
   threads,
 } from "../server/app-data";
@@ -72,7 +74,7 @@ import {
   stopJob,
   threadData,
 } from "../server/thread-data";
-import { GROUP_LABEL } from "../task-list";
+import { GROUP_LABEL, reviewable } from "../task-list";
 import { MoveItems, StatusGlyph } from "../task-ui";
 import { duration } from "../time";
 import { openThread } from "../view";
@@ -80,6 +82,7 @@ import { toBlocks, type Block } from "./blocks";
 import { clearDraft, Composer, readyDraft } from "./composer";
 import { ImageGallery, Images } from "./image-view";
 import { BlockView, Working } from "./messages";
+import { ReviewerAccess } from "./pickers";
 import { MergeButton, workspaceSlots } from "./workspace";
 
 export function ThreadView({
@@ -195,6 +198,11 @@ export function ThreadView({
                   onStop={() => interrupt(threadId)}
                   inputRef={inputRef}
                   {...slots}
+                  access={
+                    thread.kind === "review" ? (
+                      <ReviewerAccess provider={thread.settings.provider} />
+                    ) : undefined
+                  }
                 />
               )}
             </>
@@ -402,25 +410,27 @@ function ThreadHeader({
   jobs: BackgroundJob[];
 }) {
   const parentId = thread.parentId;
+  const back = thread.kind === "review" ? "Back to the task" : "Back to the thread that started it";
 
   return (
     <header className="flex h-11 min-w-0 items-center gap-2 border-b px-4">
       {parentId && (
-        <Tip label="Back to the thread that started it">
+        <Tip label={back}>
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="Back to the thread that started it"
+            aria-label={back}
             onClick={() => openThread(parentId)}
           >
             <HugeiconsIcon icon={ArrowLeft01Icon} strokeWidth={2} />
           </Button>
         </Tip>
       )}
-      {thread.kind === "subagent" && (
+      {thread.kind !== "main" && (
         <HugeiconsIcon
-          icon={UserMultiple02Icon}
+          icon={thread.kind === "review" ? InspectCodeIcon : UserMultiple02Icon}
           strokeWidth={1.8}
+          aria-label={thread.kind === "review" ? "A review" : "A subagent"}
           className="size-4 shrink-0 text-muted-foreground"
         />
       )}
@@ -432,6 +442,7 @@ function ThreadHeader({
       )}
       <div className="ml-auto flex shrink-0 items-center gap-1">
         {thread.kind === "main" && <StatusPill thread={thread} />}
+        {thread.kind === "main" && <ReviewButton thread={thread} />}
         {thread.kind === "main" && <PrimaryAction thread={thread} />}
         {jobs.length > 0 && <JobsButton threadId={thread.id} jobs={jobs} />}
         {project && (
@@ -562,6 +573,58 @@ function PrimaryAction({ thread }: { thread: Thread }) {
       </Tip>
       {finish}
     </>
+  );
+}
+
+/**
+ * Starts a fresh agent reviewing a task in review, or opens the review that runs. What it finds
+ * goes to the task's agent.
+ */
+function ReviewButton({ thread }: { thread: Thread }) {
+  const [starting, setStarting] = useState(false);
+  const { data: reviews = [] } = useLiveQuery({
+    queryKey: ["reviews", thread.id],
+    query: (q) =>
+      q
+        .from({ row: threads })
+        .where(({ row }) => and(eq(row.kind, "review"), eq(row.parentId, thread.id)))
+        .orderBy(({ row }) => row.createdAt, "desc"),
+  });
+  const latest = reviews[0];
+  if (latest && (latest.status === "running" || latest.status === "waiting")) {
+    return (
+      <Tip label="Open the review">
+        <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => openThread(latest.id)}>
+          <Spinner className="size-3.5" />
+          Reviewing
+        </Button>
+      </Tip>
+    );
+  }
+  if (!reviewable(thread) || thread.task?.status !== "review") return null;
+  const start = async () => {
+    setStarting(true);
+    const review = await startReview(thread);
+    setStarting(false);
+    if (review) openThread(review.id);
+  };
+  return (
+    <Tip label="A fresh agent reviews the work, and what it finds goes to this task's agent">
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5"
+        disabled={starting}
+        onClick={() => void start()}
+      >
+        {starting ? (
+          <Spinner className="size-3.5" />
+        ) : (
+          <HugeiconsIcon icon={InspectCodeIcon} strokeWidth={1.8} />
+        )}
+        Review
+      </Button>
+    </Tip>
   );
 }
 
@@ -726,8 +789,12 @@ function QueueList({
             className="size-3.5 shrink-0 text-muted-foreground"
           />
           <span className="min-w-0 flex-1 truncate">
-            {entry.text ||
-              `${entry.images.length} ${entry.images.length === 1 ? "image" : "images"}`}
+            {entry.app
+              ? entry.app.kind === "review"
+                ? "What the reviewer is asked"
+                : "A review's findings"
+              : entry.text ||
+                `${entry.images.length} ${entry.images.length === 1 ? "image" : "images"}`}
           </span>
           {running && (
             <Tip label="Send it into the running turn now">

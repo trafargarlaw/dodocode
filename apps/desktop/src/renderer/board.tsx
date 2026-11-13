@@ -1,12 +1,21 @@
 import { useState, type DragEvent } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
-import { unstarted, type Project, type TaskStatus, type Thread } from "@dodocode/protocol";
+import {
+  disputesWaiting,
+  latestReviews,
+  unstarted,
+  type Project,
+  type TaskStatus,
+  type Thread,
+} from "@dodocode/protocol";
 import {
   Add01Icon,
   ArchiveArrowUpIcon,
   ArrowLeft01Icon,
+  ArrowUpRight01Icon,
   BotIcon,
   Cancel01Icon,
+  InspectCodeIcon,
   MoreHorizontalIcon,
   PinIcon,
 } from "@hugeicons/core-free-icons";
@@ -20,12 +29,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@dodocode/ui/components/dropdown-menu";
+import { Spinner } from "@dodocode/ui/components/spinner";
 import { toast } from "@dodocode/ui/components/toast";
 import { cn } from "@dodocode/ui/lib/utils";
 import { loadBoard, saveBoard } from "./board-layout";
 import { Keys, Tip } from "./keys";
 import { setListFilter, useListFilter } from "./list-filter";
 import { ProjectPicker } from "./project-picker";
+import { ReviewSettingsButton } from "./review-settings";
 import {
   createIdea,
   createTask,
@@ -33,10 +44,12 @@ import {
   moveTask,
   projects,
   setNotDoing,
+  startReview,
   startTask,
   threads,
 } from "./server/app-data";
-import { boardColumns, canMerge, COLUMNS, dropOf, GROUP_LABEL } from "./task-list";
+import { boardColumns, canMerge, COLUMNS, dropOf, GROUP_LABEL, reviewable } from "./task-list";
+import { countLine } from "./thread/findings";
 import { Attention, MoveItems, StatusGlyph } from "./task-ui";
 import { ago, useNow } from "./time";
 import { openThread } from "./view";
@@ -74,6 +87,7 @@ export function BoardView() {
   const columns = boardColumns(threadList, { projectId: filter.projectId, needsYou: false });
   const names = new Map(projectList.map((project) => [project.id, project.name]));
   const titles = new Map(threadList.map((thread) => [thread.id, thread.title]));
+  const reviews = latestReviews(threadList);
   const shown: readonly TaskStatus[] = backlogOpen ? ["backlog", ...COLUMNS] : COLUMNS;
   const mixed = !filter.projectId && projectList.length > 1;
   // In the order they were picked, so the first one picked is the one the rest fold into.
@@ -170,6 +184,9 @@ export function BoardView() {
         <p className="ml-auto hidden truncate text-[12px] text-muted-foreground lg:block">
           Drag a card to move it. Drop a task nobody started on another to do them as one.
         </p>
+        <div className="ml-auto shrink-0 lg:ml-0">
+          <ReviewSettingsButton projects={projectList} projectId={filter.projectId} />
+        </div>
       </header>
       <div className="grid min-h-0 auto-cols-[minmax(220px,1fr)] grid-flow-col gap-3 overflow-x-auto p-3">
         {shown.map((status) => {
@@ -244,6 +261,7 @@ export function BoardView() {
                     now={now}
                     project={mixed && card.projectId ? names.get(card.projectId) : undefined}
                     from={noticedIn(card)}
+                    review={reviews.get(card.id)}
                     selecting={selected.size > 0}
                     selected={selected.has(card.id)}
                     onToggle={() => toggle(card)}
@@ -336,6 +354,7 @@ function Card({
   now,
   project,
   from,
+  review,
   notDoing = false,
   selecting,
   selected,
@@ -352,6 +371,8 @@ function Card({
   project: string | undefined;
   /** The task whose agent wrote this idea down. */
   from: string | undefined;
+  /** The task's latest review. */
+  review?: Thread;
   /** An idea set aside, shown under "Not doing". */
   notDoing?: boolean;
   selecting: boolean;
@@ -458,6 +479,7 @@ function Card({
           )}
           <span className="ml-auto shrink-0 tabular-nums">{ago(card.activityAt, now)}</span>
         </span>
+        {review && <ReviewChips review={review} />}
       </button>
       {over && (
         <span className="pointer-events-none absolute inset-x-0 -bottom-2.5 mx-auto w-fit rounded-full bg-primary px-2 text-[11px] leading-5 font-medium text-primary-foreground shadow">
@@ -490,7 +512,7 @@ function Card({
             >
               <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} />
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-40">
+            <DropdownMenuContent align="end" className="min-w-48">
               {notDoing ? (
                 <DropdownMenuItem onClick={() => setNotDoing(card, false)}>
                   <HugeiconsIcon icon={ArchiveArrowUpIcon} strokeWidth={1.8} />
@@ -499,6 +521,7 @@ function Card({
               ) : (
                 <>
                   <MoveItems thread={card} />
+                  <ReviewItems card={card} review={review} />
                   {card.task?.status === "backlog" && (
                     <>
                       <DropdownMenuSeparator />
@@ -515,6 +538,70 @@ function Card({
         )}
       </div>
     </li>
+  );
+}
+
+function reviewRunning(review: Thread): boolean {
+  return review.status === "running" || review.status === "waiting";
+}
+
+/**
+ * Where the task's latest review is: running, or what it found, each axis on its own, and the
+ * disputes that wait for the person.
+ */
+function ReviewChips({ review }: { review: Thread }) {
+  if (reviewRunning(review)) {
+    return (
+      <span className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+        <Spinner className="size-3" />
+        Reviewing
+      </span>
+    );
+  }
+  const found = review.review;
+  if (found?.reportedAt === undefined) return null;
+  const waiting = disputesWaiting(found).length;
+  return (
+    <span className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px] text-muted-foreground">
+      <span className="flex min-w-0 items-center gap-1" title="What its latest review found">
+        <HugeiconsIcon
+          icon={InspectCodeIcon}
+          strokeWidth={1.8}
+          aria-hidden
+          className="size-3 shrink-0"
+        />
+        <span className="truncate tabular-nums">{countLine(found)}</span>
+      </span>
+      {waiting > 0 && (
+        <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 leading-4.5 font-medium text-amber-700 dark:text-amber-400">
+          {waiting === 1 ? "1 dispute" : `${waiting} disputes`}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** Starting a review of the task's work, and opening the latest one. */
+function ReviewItems({ card, review }: { card: Thread; review: Thread | undefined }) {
+  const running = review !== undefined && reviewRunning(review);
+  const canStart = reviewable(card) && !running;
+  if (!canStart && !review) return null;
+  return (
+    <>
+      <DropdownMenuSeparator />
+      {canStart && (
+        <DropdownMenuItem onClick={() => void startReview(card)}>
+          <HugeiconsIcon icon={InspectCodeIcon} strokeWidth={1.8} />
+          Review
+        </DropdownMenuItem>
+      )}
+      {review && (
+        <DropdownMenuItem onClick={() => openThread(review.id)}>
+          {running ? <Spinner /> : <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.8} />}
+          {running ? "Open the running review" : "Open the review"}
+        </DropdownMenuItem>
+      )}
+    </>
   );
 }
 

@@ -89,6 +89,11 @@ export interface Methods {
   /** Lists the folders in a folder. A path can start with `~` for the home folder. */
   "folder.list": { params: { path: string }; result: FolderListing };
   "project.remove": { params: { projectId: string }; result: null };
+  /** Changes a project's settings. `null` clears one. */
+  "project.update": {
+    params: { projectId: string; reviewInstructions?: string | null };
+    result: Project;
+  };
   "project.openInEditor": { params: { projectId: string }; result: null };
 
   /**
@@ -170,6 +175,21 @@ export interface Methods {
    * an idea in the backlog, it stays in the backlog.
    */
   "task.split": { params: { threadId: string; itemId: string }; result: Thread };
+
+  /**
+   * Starts a fresh agent reviewing a task's work, in a thread of its own under the task, and
+   * returns that thread. What it finds goes to the task's agent, which fixes each finding or
+   * says why it is as intended.
+   */
+  "review.start": { params: { threadId: string }; result: Thread };
+  /**
+   * The person's call on a finding the task's agent disputed: `fix` sends it back to be fixed
+   * anyway, `agree` leaves it as it is.
+   */
+  "review.decide": {
+    params: { reviewId: string; findingId: string; decision: "fix" | "agree" };
+    result: null;
+  };
 
   "queue.remove": { params: { threadId: string; queueId: string }; result: null };
   /** Sends a queued message into the running turn now. */

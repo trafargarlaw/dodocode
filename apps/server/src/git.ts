@@ -212,7 +212,7 @@ export async function deleteBranch(folder: string, branch: string): Promise<void
 }
 
 /** The commit a checkout's changes are counted from: where it left `base`, or its own HEAD. */
-async function startOf(folder: string, base: string | undefined): Promise<string> {
+export async function startOf(folder: string, base: string | undefined): Promise<string> {
   if (base) {
     const fork = await run(folder, ["merge-base", base, "HEAD"]);
     if (fork.code === 0 && fork.stdout.trim()) return fork.stdout.trim();

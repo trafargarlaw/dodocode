@@ -8,6 +8,7 @@ import {
   ArrowRight01Icon,
   Folder01Icon,
   FolderAddIcon,
+  InspectCodeIcon,
   KanbanIcon,
   PencilEdit02Icon,
   UserMultiple02Icon,
@@ -170,8 +171,11 @@ export function SearchPage({
                   ]}
                   onSelect={run(() => openThread(thread.id))}
                 >
-                  {thread.kind === "subagent" && (
-                    <HugeiconsIcon icon={UserMultiple02Icon} strokeWidth={1.8} />
+                  {thread.kind !== "main" && (
+                    <HugeiconsIcon
+                      icon={thread.kind === "review" ? InspectCodeIcon : UserMultiple02Icon}
+                      strokeWidth={1.8}
+                    />
                   )}
                   <span className="min-w-0 truncate">{thread.title}</span>
                   {/* Grows rather than pushing with ml-auto: the item's hidden check icon has

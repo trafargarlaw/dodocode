@@ -28,21 +28,7 @@ import type {
 } from "@dodocode/protocol";
 
 import { AsyncQueue, errorText, log, newId, within } from "../util";
-import {
-  ADD_IDEA,
-  ADD_IDEA_DESCRIPTION,
-  addIdea,
-  addIdeaInput,
-  APP_INSTRUCTIONS,
-  MOVE_TASK,
-  MOVE_TASK_DESCRIPTION,
-  moveTask,
-  moveTaskInput,
-  SHOW_PAGE,
-  SHOW_PAGE_DESCRIPTION,
-  showPage,
-  showPageInput,
-} from "./app-tools";
+import { appInstructions, appToolsFor } from "./app-tools";
 import { Transcript, type TranscriptHooks } from "./claude-transcript";
 import { APP_SERVER, APP_TOOLS, changesForInput, describeTool, relativePath } from "./claude-tools";
 import { agentEnv, findOnPath, HOME_BIN } from "./env";
@@ -101,40 +87,23 @@ function modelOption(info: ModelInfo): ModelOption {
 function appServer(host: SessionHost) {
   return createSdkMcpServer({
     name: APP_SERVER,
-    tools: [
+    tools: appToolsFor(host.reviewing).map((tool) =>
       sdkTool(
-        MOVE_TASK,
-        MOVE_TASK_DESCRIPTION,
-        moveTaskInput,
+        tool.name,
+        tool.description,
+        tool.input,
         async (args) => {
-          const answer = moveTask(host, args);
+          const answer = tool.run(host, args);
           return { content: [{ type: "text", text: answer.text }], isError: !answer.ok };
         },
         { alwaysLoad: true },
       ),
-      sdkTool(
-        ADD_IDEA,
-        ADD_IDEA_DESCRIPTION,
-        addIdeaInput,
-        async (args) => {
-          const answer = addIdea(host, args);
-          return { content: [{ type: "text", text: answer.text }], isError: !answer.ok };
-        },
-        { alwaysLoad: true },
-      ),
-      sdkTool(
-        SHOW_PAGE,
-        SHOW_PAGE_DESCRIPTION,
-        showPageInput,
-        async (args) => {
-          const answer = showPage(host, args);
-          return { content: [{ type: "text", text: answer.text }], isError: !answer.ok };
-        },
-        { alwaysLoad: true },
-      ),
-    ],
+    ),
   });
 }
+
+/** A reviewer only reads. Its commands are held to that only by what it is told. */
+const REVIEWER_DISALLOWED = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
 /**
  * What the work since the last result cost, from the running total a result carries and the
@@ -372,10 +341,15 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
       canUseTool: this.canUseTool,
       includePartialMessages: true,
       thinking: { type: "adaptive", display: "summarized" },
-      systemPrompt: { type: "preset", preset: "claude_code", append: APP_INSTRUCTIONS },
+      systemPrompt: {
+        type: "preset",
+        preset: "claude_code",
+        append: appInstructions(this.host.reviewing),
+      },
       env: agentEnv(),
       mcpServers: { [APP_SERVER]: appServer(this.host) },
       allowedTools: [...APP_TOOLS, ...this.allowedRules],
+      ...(this.host.reviewing ? { disallowedTools: REVIEWER_DISALLOWED } : {}),
       ...(resume ? { resume } : {}),
       ...(this.executable ? { pathToClaudeCodeExecutable: this.executable } : {}),
       stderr: (data) => {

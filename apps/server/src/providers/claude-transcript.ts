@@ -7,7 +7,7 @@ import {
   changesForInput,
   changesFromResult,
   describeTool,
-  SHOW_PAGE_TOOL,
+  isHiddenAppTool,
   todosFrom,
 } from "./claude-tools";
 import type { ItemWriter } from "./types";
@@ -36,7 +36,7 @@ interface Block {
 type StreamKind = "text" | "thinking";
 
 /** Tools whose calls show as something else, or not at all. */
-const HIDDEN_TOOLS = new Set(["AskUserQuestion", SHOW_PAGE_TOOL]);
+const HIDDEN_TOOLS = new Set(["AskUserQuestion"]);
 
 export class Transcript {
   readonly writer: ItemWriter;
@@ -222,7 +222,7 @@ export class Transcript {
     if (!id || this.tools.has(id)) return;
     const input = (block.input ?? {}) as Record<string, unknown>;
     this.tools.set(id, { name, input });
-    if (HIDDEN_TOOLS.has(name)) {
+    if (HIDDEN_TOOLS.has(name) || isHiddenAppTool(name)) {
       this.hidden.add(id);
       return;
     }

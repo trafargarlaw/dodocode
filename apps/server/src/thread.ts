@@ -5,6 +5,7 @@ import { resolve as resolvePath } from "node:path";
 
 import {
   TASK_STATUS_LABEL,
+  type AppMessage,
   type ApprovalDecision,
   type ApprovalItem,
   type BackgroundJob,
@@ -24,6 +25,8 @@ import {
 import type {
   AgentMove,
   ApprovalRequest,
+  FindingAnswerRequest,
+  FindingReport,
   IdeaRequest,
   ItemPatch,
   ItemWriter,
@@ -63,7 +66,16 @@ export interface ThreadContext {
   commandsFound(thread: Thread, provider: ProviderId, commands: SlashCommand[]): void;
   /** Puts an idea the agent noticed in `from` in the backlog of its project, as a new task. */
   addIdea(from: Thread, idea: IdeaRequest): Thread;
+  /** Keeps what the reviewer in `review` found. Returns what to tell it. */
+  reportFindings(review: Thread, findings: FindingReport[]): string;
+  /** Records the answers of the agent in `task` to its latest review. Returns what to tell it. */
+  answerFindings(task: Thread, answers: FindingAnswerRequest[]): string;
+  /** Sets how the project of `from` is reviewed. Returns what to tell the agent. */
+  setReviewInstructions(from: Thread, path: string | null): string;
 }
+
+/** A message to send, and, when the app wrote it for the person, what it is. */
+export type ThreadMessage = OutgoingMessage & { app?: AppMessage };
 
 interface Turn {
   id: string;
@@ -127,7 +139,7 @@ export class ThreadRuntime {
 
   // Changes from clients
 
-  async send(message: OutgoingMessage, mode: "queue" | "steer" = "queue"): Promise<void> {
+  async send(message: ThreadMessage, mode: "queue" | "steer" = "queue"): Promise<void> {
     if (this.thread.kind === "subagent") throw new Error("A subagent's thread takes no messages.");
     if (!this.turn) {
       await this.startTurn(message);
@@ -141,7 +153,7 @@ export class ThreadRuntime {
     const queued = this.queue.find((entry) => entry.id === queueId);
     if (!queued) return;
     this.setQueue(this.queue.filter((entry) => entry.id !== queueId));
-    const message = { text: queued.text, images: queued.images };
+    const message = { text: queued.text, images: queued.images, app: queued.app };
     if (!this.turn) {
       await this.startTurn(message);
     } else if (!(await this.steer(message))) {
@@ -290,7 +302,7 @@ export class ThreadRuntime {
 
   // Turns
 
-  private async startTurn(message: OutgoingMessage): Promise<void> {
+  private async startTurn(message: ThreadMessage): Promise<void> {
     const turn: Turn = {
       id: newId(),
       startedAt: Date.now(),
@@ -307,7 +319,7 @@ export class ThreadRuntime {
       activityAt: Date.now(),
       error: undefined,
     };
-    this.writer.add({ type: "user", text: message.text, images: message.images });
+    this.writer.add({ type: "user", ...userFields(message) });
     this.refreshStatus();
     try {
       const session = this.ensureSession();
@@ -318,7 +330,7 @@ export class ThreadRuntime {
     }
   }
 
-  private async steer(message: OutgoingMessage): Promise<boolean> {
+  private async steer(message: ThreadMessage): Promise<boolean> {
     if (!this.session || !this.turn || this.turn.interrupting) return false;
     let sent = false;
     try {
@@ -327,16 +339,13 @@ export class ThreadRuntime {
       log("thread", "steer failed", errorText(error));
     }
     if (sent) {
-      this.writer.add({ type: "user", text: message.text, images: message.images, steered: true });
+      this.writer.add({ type: "user", ...userFields(message), steered: true });
     }
     return sent;
   }
 
-  private enqueue(message: OutgoingMessage): void {
-    this.setQueue([
-      ...this.queue,
-      { id: newId(), text: message.text, images: message.images, createdAt: Date.now() },
-    ]);
+  private enqueue(message: ThreadMessage): void {
+    this.setQueue([...this.queue, { id: newId(), ...userFields(message), createdAt: Date.now() }]);
   }
 
   private setQueue(queue: QueuedMessage[]): void {
@@ -388,7 +397,7 @@ export class ThreadRuntime {
       const [next, ...rest] = this.queue;
       if (next) {
         this.setQueue(rest);
-        void this.startTurn({ text: next.text, images: next.images });
+        void this.startTurn({ text: next.text, images: next.images, app: next.app });
       }
     }
   }
@@ -495,6 +504,16 @@ export class ThreadRuntime {
       },
       contextUsed: (patch) => runtime.contextUsed(patch),
       commandsFound: (commands) => runtime.ctx.commandsFound(runtime.thread, providerId, commands),
+      reviewing: this.thread.kind === "review",
+      reportFindings: (findings) => {
+        const first = runtime.thread.review?.reportedAt === undefined;
+        const answer = runtime.ctx.reportFindings(runtime.thread, findings);
+        // The findings show where the reviewer reported them, and stay current as they're answered.
+        if (first) runtime.writer.add({ type: "findings", reviewId: runtime.thread.id });
+        return answer;
+      },
+      answerFindings: (answers) => runtime.ctx.answerFindings(runtime.thread, answers),
+      setReviewInstructions: (path) => runtime.ctx.setReviewInstructions(runtime.thread, path),
     };
   }
 
@@ -723,4 +742,13 @@ export class ThreadRuntime {
       }
     }
   }
+}
+
+/** A message's fields as a user item or a queued message keeps them. */
+function userFields(message: ThreadMessage): Pick<QueuedMessage, "text" | "images" | "app"> {
+  return {
+    text: message.text,
+    images: message.images,
+    ...(message.app ? { app: message.app } : {}),
+  };
 }

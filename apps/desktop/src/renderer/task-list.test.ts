@@ -1,6 +1,13 @@
 import { describe, expect, test } from "vitest";
 import type { TaskStatus, Thread, ThreadStatus } from "@dodocode/protocol";
-import { boardColumns, CHAT_AGE_MS, dropOf, sidebarGroups, type ListFilter } from "./task-list";
+import {
+  boardColumns,
+  CHAT_AGE_MS,
+  dropOf,
+  reviewable,
+  sidebarGroups,
+  type ListFilter,
+} from "./task-list";
 
 function thread(id: string, fields: Partial<Thread> = {}): Thread {
   return {
@@ -245,4 +252,21 @@ describe("dropping a card", () => {
   ])("%s", (_name, card, target, expected) => {
     expect(dropOf(card, target)).toEqual(expected);
   });
+});
+
+test.each([
+  ["a task under way", task("a", "progress"), true],
+  ["a task in review", task("a", "review"), true],
+  ["a task nobody started", task("a", "todo", { startedAt: undefined }), false],
+  ["a task done", task("a", "done"), false],
+  [
+    "a task whose work is merged",
+    task("a", "review", {
+      worktree: { path: "w", workDir: "w", branch: "b", from: "c", mergedAt: 5 },
+    }),
+    false,
+  ],
+  ["a chat", thread("a"), false],
+])("%s can be reviewed: %s", (_name, card, can) => {
+  expect(reviewable(card)).toBe(can);
 });

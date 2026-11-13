@@ -41,13 +41,14 @@ export function moved(thread: Thread, status: TaskStatus | null, now: number): T
     }
     return { ...thread, task: undefined, keepChat: true, updatedAt: now };
   }
-  if (thread.kind === "subagent") throw new Error("A subagent's thread can't be a task.");
+  if (thread.kind === "review") throw new Error("A review belongs to its task. It can't be one.");
+  if (thread.kind !== "main") throw new Error("A subagent's thread can't be a task.");
   if (!thread.projectId) throw new Error("Only a thread in a project can be a task.");
   if (thread.task?.status === status) return thread;
   if (status === "backlog" && thread.startedAt !== undefined) {
     throw new Error("It has started, so it can't go back to the backlog.");
   }
-  const suggestedBy = thread.task?.suggestedBy;
+  const { suggestedBy, autoReviewed } = thread.task ?? {};
   return {
     ...thread,
     task: {
@@ -55,9 +56,20 @@ export function moved(thread: Thread, status: TaskStatus | null, now: number): T
       status,
       movedAt: now,
       ...(suggestedBy ? { suggestedBy } : {}),
+      ...(autoReviewed ? { autoReviewed } : {}),
     },
     updatedAt: now,
   };
+}
+
+/**
+ * The task back in In progress because its agent changed files while it was in review, or
+ * nothing when it isn't in review. The person can move it back.
+ */
+export function reopened(thread: Thread, now: number): Thread | undefined {
+  if (thread.task?.status !== "review") return undefined;
+  const next = moved(thread, "progress", now);
+  return { ...next, task: { ...next.task!, reopened: true } };
 }
 
 /**

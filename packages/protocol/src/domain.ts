@@ -70,6 +70,11 @@ export interface Project {
   createdAt: number;
   /** Set when the folder is in a git repository. The server keeps it current. */
   git?: ProjectGit;
+  /**
+   * A Markdown file that says how to review this project's work, in place of the built-in way:
+   * relative to the project's folder, or absolute. Unset: the built-in way.
+   */
+  reviewInstructions?: string;
 }
 
 /** What git says about a project's folder. */
@@ -144,17 +149,71 @@ export interface Task {
   promoted?: boolean;
   /** Set when an agent wrote it down: the thread it was working in, which noticed it. */
   suggestedBy?: string;
+  /**
+   * Set once it reached In review with automatic reviews on, so a review started for it. It
+   * reviews by itself only that once; after that, only when the person asks.
+   */
+  autoReviewed?: boolean;
+  /** Set when it went back to In progress by itself, because its agent changed files in review. */
+  reopened?: boolean;
+}
+
+/**
+ * A review of a task's work, in a thread of its own under the task. The reviewer reads and
+ * reports; the task's own agent, which knows why the code is as it is, answers each finding.
+ */
+export interface Review {
+  /** The commit the work is compared with. */
+  base: string;
+  /** How the person knows the base: a branch, or a short commit. */
+  baseLabel: string;
+  /** The Markdown file the reviewer followed, when the project set one. Unset: the built-in way. */
+  instructions?: string;
+  /** Started by the app as the task reached In review, not by the person. */
+  auto?: boolean;
+  /** Set once the reviewer reported what it found. */
+  reportedAt?: number;
+  findings: Finding[];
+  /** Set once the findings went to the task's agent. Its answers come back into them. */
+  sentAt?: number;
+}
+
+/** One thing a review found. */
+export interface Finding {
+  id: string;
+  /** The axis it was found on, such as Standards or Spec. Findings are never ranked across axes. */
+  group: string;
+  /** What sort of finding it is on its axis, such as a violation or a judgement call. */
+  kind: string;
+  /** What is wrong, in a sentence or two. */
+  summary: string;
+  /** The file it is in, relative to the project's folder. */
+  file?: string;
+  line?: number;
+  /** The code, the standard or the request it rests on, word for word. */
+  quote?: string;
+  /** What the task's agent did about it. */
+  answer?: FindingAnswer;
+  /** What the person decided about a finding the agent disputed. */
+  decision?: "fix" | "agree";
+}
+
+export interface FindingAnswer {
+  /** `fixed`: the agent changed the code. `disputed`: it is as intended, and the note says why. */
+  outcome: "fixed" | "disputed";
+  note: string;
 }
 
 export interface Thread {
   id: string;
   /** The project the agent works in. A thread without one works in a folder of its own. */
   projectId?: string;
-  /** Set on a subagent's thread: the thread that started it. */
+  /** Set on a subagent's thread: the thread that started it. On a review's: the task. */
   parentId?: string;
   /** On a subagent's thread, the tool call in the parent that started it. */
   parentItemId?: string;
-  kind: "main" | "subagent";
+  /** `review`: a fresh agent reviewing a task's work, under the task. */
+  kind: "main" | "subagent" | "review";
   title: string;
   status: ThreadStatus;
   settings: ThreadSettings;
@@ -183,6 +242,8 @@ export interface Thread {
   archived?: boolean;
   /** How full the agent's context is, as last measured. Unset before its first turn. */
   context?: ContextUsage;
+  /** On a review's thread: what it reviews, and what it found. */
+  review?: Review;
 }
 
 /** An image the person pasted or dropped, kept by the server. */
@@ -208,7 +269,16 @@ export interface UserItem extends ItemBase {
   images: ImageRef[];
   /** Sent into a turn that was running, rather than starting one. */
   steered?: boolean;
+  /** Set when the app wrote the message for the person: what it is, which shows in its place. */
+  app?: AppMessage;
 }
+
+/** A message the app sends an agent on the person's behalf. */
+export type AppMessage =
+  /** What a reviewer is asked to do. */
+  | { kind: "review" }
+  /** A review's findings, handed to the task's agent to answer. */
+  | { kind: "findings"; reviewId: string };
 
 export interface AssistantItem extends ItemBase {
   type: "assistant";
@@ -329,6 +399,13 @@ export interface ViewItem extends ItemBase {
   path?: string;
 }
 
+/** What a reviewer reported, which shows as the findings with what became of each. */
+export interface FindingsItem extends ItemBase {
+  type: "findings";
+  /** The review's thread, which holds them. */
+  reviewId: string;
+}
+
 /** The end of a turn, with what it took. */
 export interface TurnEndItem extends ItemBase {
   type: "turn_end";
@@ -349,6 +426,7 @@ export type Item =
   | QuestionItem
   | NoticeItem
   | ViewItem
+  | FindingsItem
   | TurnEndItem;
 
 export type ItemType = Item["type"];
@@ -359,6 +437,8 @@ export interface QueuedMessage {
   text: string;
   images: ImageRef[];
   createdAt: number;
+  /** Set when the app wrote it for the person. */
+  app?: AppMessage;
 }
 
 /** Work the agent left running: a background command, a subagent, a monitor. */
@@ -381,4 +461,13 @@ export interface Settings {
   lastByProvider: Partial<Record<ProviderId, { model: string; effort: string }>>;
   /** Where tasks start: the choice last made for one. Chats start in the project's folder. */
   workspace: WorkspaceMode;
+  review: ReviewSettings;
+}
+
+/** How tasks get reviewed. */
+export interface ReviewSettings {
+  /** Reviews a task by itself the first time it reaches In review. */
+  auto: boolean;
+  /** The model reviews run with. Unset: each task's own. */
+  model?: Pick<ThreadSettings, "provider" | "model" | "effort">;
 }

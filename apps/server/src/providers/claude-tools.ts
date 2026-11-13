@@ -4,20 +4,22 @@ import { isAbsolute, relative } from "node:path";
 
 import type { FileChange, TodoEntry, ToolKind } from "@dodocode/protocol";
 
-import { ADD_IDEA, addIdeaTitle, MOVE_TASK, moveTaskTitle, SHOW_PAGE } from "./app-tools";
+import { ALL_APP_TOOLS, appTool } from "./app-tools";
 
 /** The in-process server that gives Claude dodocode's own tools, as `mcp__dodocode__<tool>`. */
 export const APP_SERVER = "dodocode";
 
-const MOVE_TASK_TOOL = `mcp__${APP_SERVER}__${MOVE_TASK}`;
-
-const ADD_IDEA_TOOL = `mcp__${APP_SERVER}__${ADD_IDEA}`;
-
-/** Shows as the page it shows, not as a tool call. */
-export const SHOW_PAGE_TOOL = `mcp__${APP_SERVER}__${SHOW_PAGE}`;
+const APP_PREFIX = `mcp__${APP_SERVER}__`;
 
 /** The app's tools are always allowed: none of them changes files or runs anything. */
-export const APP_TOOLS = [MOVE_TASK_TOOL, ADD_IDEA_TOOL, SHOW_PAGE_TOOL];
+export const APP_TOOLS = ALL_APP_TOOLS.map((tool) => `${APP_PREFIX}${tool.name}`);
+
+/** Set for an app tool that shows as what it made, such as a page, not as a tool call. */
+export function isHiddenAppTool(name: string): boolean {
+  if (!name.startsWith(APP_PREFIX)) return false;
+  const tool = appTool(name.slice(APP_PREFIX.length));
+  return tool !== undefined && !tool.title;
+}
 
 export function relativePath(path: string, cwd: string): string {
   if (!path || !isAbsolute(path)) return path;
@@ -91,11 +93,9 @@ export function describeTool(
         kind: "other",
         title: `Use the ${text(input.skill) || text(input.command) || ""} skill`.replace("  ", " "),
       };
-    case MOVE_TASK_TOOL:
-      return { kind: "other", title: moveTaskTitle(input) };
-    case ADD_IDEA_TOOL:
-      return { kind: "other", title: addIdeaTitle(input) };
     default: {
+      const own = name.startsWith(APP_PREFIX) ? appTool(name.slice(APP_PREFIX.length)) : undefined;
+      if (own?.title) return { kind: "other", title: own.title(input) };
       if (name.startsWith("mcp__")) {
         const [, server, ...tool] = name.split("__");
         return { kind: "mcp", title: `${server}: ${tool.join("__")}` };

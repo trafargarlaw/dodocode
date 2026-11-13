@@ -118,6 +118,8 @@ export interface ComposerProps {
   where?: ReactNode;
   /** The branch it works on, at the end of that row, before the access it has. */
   branch?: ReactNode;
+  /** What the agent may do, at the end of that row. Unset: the picker for how much it may do without asking. */
+  access?: ReactNode;
   /** What the send button says it does, when it does more than send. */
   sendLabel?: string;
   /** Lets the button send with nothing written, as when it starts a task. */
@@ -147,6 +149,7 @@ export function Composer({
   focusOnMount,
   where,
   branch,
+  access,
   sendLabel,
   allowEmpty,
   alternate,
@@ -471,7 +474,7 @@ export function Composer({
             />
           )}
           {branch}
-          <AccessPicker settings={settings} onChange={onSettingsChange} />
+          {access ?? <AccessPicker settings={settings} onChange={onSettingsChange} />}
         </div>
       </div>
       <ComposerHints running={running && !empty} reason={reason} />

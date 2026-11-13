@@ -1,6 +1,7 @@
 import type {
   ApprovalItem,
   AssistantItem,
+  FindingsItem,
   Item,
   NoticeItem,
   QuestionItem,
@@ -26,6 +27,8 @@ export type Block =
   | { kind: "question"; id: string; item: QuestionItem }
   | { kind: "notice"; id: string; item: NoticeItem }
   | { kind: "view"; id: string; item: ViewItem }
+  /** What a review found, as it reported it. */
+  | { kind: "findings"; id: string; item: FindingsItem }
   | { kind: "turn_end"; id: string; item: TurnEndItem };
 
 /**
@@ -69,6 +72,9 @@ export function toBlocks(
         break;
       case "view":
         blocks.push({ kind: "view", id: item.id, item });
+        break;
+      case "findings":
+        blocks.push({ kind: "findings", id: item.id, item });
         break;
       case "turn_end":
         blocks.push({ kind: "turn_end", id: item.id, item });

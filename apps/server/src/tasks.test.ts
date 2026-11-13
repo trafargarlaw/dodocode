@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { Task, Thread } from "@dodocode/protocol";
-import { itemFrom, merged, moved, promoted, split, started } from "./tasks";
+import { itemFrom, merged, moved, promoted, reopened, split, started } from "./tasks";
 
 function thread(fields: Partial<Thread> = {}): Thread {
   return {
@@ -66,6 +66,12 @@ describe("moving", () => {
       "A subagent's thread can't be a task.",
     ],
     [
+      "a review's thread",
+      thread({ kind: "review", parentId: "a" }),
+      "review",
+      "A review belongs to its task. It can't be one.",
+    ],
+    [
       "a task nobody started, to a chat",
       todo("a", "A"),
       null,
@@ -105,6 +111,21 @@ test("a chat that changes files becomes a task in progress, unless it can't or w
   expect(promoted(thread({ projectId: undefined }), 5)).toBeUndefined();
   expect(promoted(thread({ keepChat: true }), 5)).toBeUndefined();
   expect(promoted(todo("a", "A"), 5)).toBeUndefined();
+});
+
+test("a task in review whose agent changes files goes back to In progress, still reviewed once", () => {
+  const inReview = todo("a", "A", {
+    startedAt: 1,
+    task: { status: "review", covers: [], movedAt: 0, autoReviewed: true },
+  });
+  expect(reopened(inReview, 5)?.task).toEqual({
+    status: "progress",
+    covers: [],
+    movedAt: 5,
+    autoReviewed: true,
+    reopened: true,
+  });
+  expect(reopened(todo("b", "B", { startedAt: 1 }), 5)).toBeUndefined();
 });
 
 test("the first turn of a task in To do moves it to In progress, and marks it started once", () => {

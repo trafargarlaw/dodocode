@@ -15,6 +15,7 @@ import { Tip } from "../keys";
 import { duration } from "../time";
 import type { Block } from "./blocks";
 import { ApprovalCard, QuestionCard } from "./cards";
+import { FindingsCard, ReviewBriefMessage } from "./findings";
 import { Images } from "./image-view";
 import { Markdown } from "./markdown";
 import { compact, cost } from "./numbers";
@@ -25,6 +26,11 @@ import { StepsBlock } from "./steps";
 export const BlockView = memo(function BlockView({ block }: { block: Block }) {
   switch (block.kind) {
     case "user":
+      // A message the app wrote for an agent shows as what it is, not as the person's words.
+      if (block.item.app?.kind === "review") return <ReviewBriefMessage item={block.item} />;
+      if (block.item.app?.kind === "findings") {
+        return <FindingsCard reviewId={block.item.app.reviewId} inTask />;
+      }
       return <UserMessage item={block.item} />;
     case "assistant":
       return block.item.text ? <Markdown text={block.item.text} className="text-[13.5px]" /> : null;
@@ -38,6 +44,8 @@ export const BlockView = memo(function BlockView({ block }: { block: Block }) {
       return <Notice item={block.item} />;
     case "view":
       return <PageView item={block.item} />;
+    case "findings":
+      return <FindingsCard reviewId={block.item.reviewId} />;
     case "turn_end":
       return <TurnEnd item={block.item} />;
   }

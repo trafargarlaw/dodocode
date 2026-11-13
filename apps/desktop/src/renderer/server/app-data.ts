@@ -8,6 +8,7 @@ import {
   type OutgoingMessage,
   type Project,
   type ProviderInfo,
+  type ReviewSettings,
   type Settings,
   type Snapshot,
   type TaskStatus,
@@ -42,6 +43,7 @@ const appFeed = new Feed<Snapshot>({
         break;
       case "thread":
         announcePromotion(threads.get(event.thread.id), event.thread);
+        announceReopen(threads.get(event.thread.id), event.thread);
         threadRows?.upsert([event.thread]);
         break;
       case "thread.removed":
@@ -410,6 +412,61 @@ function announcePromotion(before: Thread | undefined, after: Thread): void {
       },
     },
   });
+}
+
+/** A task in review whose agent changed files went back to In progress, which can be undone. */
+function announceReopen(before: Thread | undefined, after: Thread): void {
+  if (before?.task?.status !== "review" || !after.task?.reopened) return;
+  if (after.task.status !== "progress") return;
+  withUndo("Its agent changed files, so it's back in In progress", after.title, () => {
+    const current = threads.get(after.id) ?? after;
+    void moveTask(current, "review");
+  });
+}
+
+// Reviews
+
+/**
+ * Starts a fresh agent reviewing a task's work, in a thread under the task. While one runs, gives
+ * back that one.
+ */
+export async function startReview(thread: Thread): Promise<Thread | undefined> {
+  try {
+    return await server.call("review.start", { threadId: thread.id });
+  } catch (error) {
+    return reportError("Could not start the review", error);
+  }
+}
+
+/** The person's call on a finding the task's agent disputed. */
+export function decideFinding(
+  reviewId: string,
+  findingId: string,
+  decision: "fix" | "agree",
+): void {
+  server
+    .call("review.decide", { reviewId, findingId, decision })
+    .catch((error: unknown) => reportError("Could not record your call", error));
+}
+
+export function setReviewSettings(review: ReviewSettings): void {
+  server
+    .call("settings.update", { review })
+    .catch((error: unknown) => reportError("Could not change the review settings", error));
+}
+
+/** Sets the Markdown file a project's work is reviewed by, or the built-in way with `null`. */
+export async function setReviewInstructions(
+  projectId: string,
+  path: string | null,
+): Promise<boolean> {
+  try {
+    await server.call("project.update", { projectId, reviewInstructions: path });
+    return true;
+  } catch (error) {
+    reportError("Could not set how it's reviewed", error);
+    return false;
+  }
 }
 
 export function renameThread(threadId: string, title: string): void {

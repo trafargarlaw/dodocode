@@ -5,6 +5,8 @@ import type {
   ApprovalItem,
   BackgroundJob,
   ContextUsage,
+  Finding,
+  FindingAnswer,
   ImageRef,
   Item,
   ItemBase,
@@ -141,6 +143,28 @@ export interface SessionHost {
   contextUsed(patch: ContextPatch): void;
   /** The slash commands the agent takes where it works, its own and the ones added there. */
   commandsFound(commands: SlashCommand[]): void;
+  /**
+   * Set when the agent reviews a task's work: it only reads, and reports what it found with
+   * report_findings, rather than moving tasks or answering findings.
+   */
+  readonly reviewing: boolean;
+  /** Keeps what a reviewer found. Returns what to tell it; throws when it can't. */
+  reportFindings(findings: FindingReport[]): string;
+  /** Records the task's agent's answers to its latest review. Returns what to tell it. */
+  answerFindings(answers: FindingAnswerRequest[]): string;
+  /**
+   * Sets the Markdown file the project's work is reviewed by, or the built-in way with `null`,
+   * because the person asked the agent to. Returns what to tell it; throws when it can't.
+   */
+  setReviewInstructions(path: string | null): string;
+}
+
+/** A finding as a reviewer reports it. */
+export type FindingReport = Omit<Finding, "id" | "answer" | "decision">;
+
+/** The task's agent's answer to the finding with `id`. */
+export interface FindingAnswerRequest extends FindingAnswer {
+  id: string;
 }
 
 export interface ProviderSession {

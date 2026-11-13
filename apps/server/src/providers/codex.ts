@@ -10,24 +10,7 @@ import type {
 } from "@dodocode/protocol";
 
 import { errorText, log, wellFormed } from "../util";
-import {
-  ADD_IDEA,
-  ADD_IDEA_DESCRIPTION,
-  ADD_IDEA_SCHEMA,
-  addIdea,
-  addIdeaTitle,
-  APP_INSTRUCTIONS,
-  MOVE_TASK,
-  MOVE_TASK_DESCRIPTION,
-  MOVE_TASK_SCHEMA,
-  moveTask,
-  moveTaskTitle,
-  SHOW_PAGE,
-  SHOW_PAGE_DESCRIPTION,
-  SHOW_PAGE_SCHEMA,
-  showPage,
-  type ToolAnswer,
-} from "./app-tools";
+import { appInstructions, appTool, appToolsFor, runAppTool } from "./app-tools";
 import { relativePath } from "./claude-tools";
 import { CodexProcess, RpcError } from "./codex-rpc";
 import { findOnPath } from "./env";
@@ -178,7 +161,11 @@ export class CodexProvider implements Provider {
  * What the person allows runs in a sandbox that can write the project and reach the network; a
  * read-only sandbox would refuse the very writes they allowed.
  */
-function accessPolicy(settings: ThreadSettings, cwd: string) {
+function accessPolicy(settings: ThreadSettings, cwd: string, reviewing: boolean) {
+  // A reviewer only reads, whatever access the person gives agents.
+  if (reviewing) {
+    return { approvalPolicy: "never", sandboxPolicy: { type: "readOnly", networkAccess: true } };
+  }
   return settings.access === "full"
     ? { approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" } }
     : {
@@ -378,20 +365,17 @@ class ItemMapper {
           output,
         };
       }
-      case "dynamicToolCall":
-        // A page shows as itself.
-        if (item.tool === SHOW_PAGE) return undefined;
+      case "dynamicToolCall": {
+        const own = appTool(String(item.tool ?? ""));
+        // A page, or findings, show as themselves.
+        if (own && !own.title) return undefined;
         return {
           kind: "other" as const,
           name: String(item.tool ?? "tool"),
-          title:
-            item.tool === MOVE_TASK
-              ? moveTaskTitle(item.arguments)
-              : item.tool === ADD_IDEA
-                ? addIdeaTitle(item.arguments)
-                : String(item.tool ?? "Tool"),
+          title: own?.title ? own.title(item.arguments) : String(item.tool ?? "Tool"),
           input: item.arguments,
         };
+      }
       case "webSearch":
         return {
           kind: "web" as const,
@@ -482,7 +466,7 @@ class CodexSession implements ProviderSession, Route {
       effort: settings.effort || null,
       summary: "detailed",
       approvalsReviewer: "user",
-      ...accessPolicy(settings, this.host.cwd),
+      ...accessPolicy(settings, this.host.cwd, this.host.reviewing),
     })) as { turn?: { id: string } };
     if (turn === this.turn && !turn.id) turn.id = response.turn?.id;
   }
@@ -549,7 +533,7 @@ class CodexSession implements ProviderSession, Route {
       cwd: this.host.cwd,
       model: settings.model || null,
       config: { "tools.update_plan.enabled": true },
-      developerInstructions: APP_INSTRUCTIONS,
+      developerInstructions: appInstructions(this.host.reviewing),
     };
     const resumeId = this.host.resumeId;
     let threadId: string | undefined;
@@ -582,26 +566,12 @@ class CodexSession implements ProviderSession, Route {
       // A thread keeps the tools it starts with; resuming it takes no new ones.
       const result = (await server.request("thread/start", {
         ...common,
-        dynamicTools: [
-          {
-            type: "function",
-            name: MOVE_TASK,
-            description: MOVE_TASK_DESCRIPTION,
-            inputSchema: MOVE_TASK_SCHEMA,
-          },
-          {
-            type: "function",
-            name: ADD_IDEA,
-            description: ADD_IDEA_DESCRIPTION,
-            inputSchema: ADD_IDEA_SCHEMA,
-          },
-          {
-            type: "function",
-            name: SHOW_PAGE,
-            description: SHOW_PAGE_DESCRIPTION,
-            inputSchema: SHOW_PAGE_SCHEMA,
-          },
-        ],
+        dynamicTools: appToolsFor(this.host.reviewing).map((tool) => ({
+          type: "function",
+          name: tool.name,
+          description: tool.description,
+          inputSchema: tool.schema,
+        })),
       })) as { thread: { id: string } };
       threadId = result.thread.id;
       this.host.saveResumeId(threadId);
@@ -929,14 +899,7 @@ class CodexSession implements ProviderSession, Route {
         };
       }
       case "item/tool/call": {
-        const answer: ToolAnswer =
-          params.tool === MOVE_TASK
-            ? moveTask(this.host, params.arguments)
-            : params.tool === ADD_IDEA
-              ? addIdea(this.host, params.arguments)
-              : params.tool === SHOW_PAGE
-                ? showPage(this.host, params.arguments)
-                : { ok: false, text: `dodocode has no tool named ${String(params.tool)}.` };
+        const answer = runAppTool(this.host, String(params.tool), params.arguments);
         return { contentItems: [{ type: "inputText", text: answer.text }], success: answer.ok };
       }
       default:

@@ -2,7 +2,7 @@
 // happens: how much the agent may do without asking. The agent and its model are picked in the
 // box, with the picker in model-picker.tsx.
 
-import type { AccessMode, ThreadSettings } from "@dodocode/protocol";
+import type { AccessMode, ProviderId, ThreadSettings } from "@dodocode/protocol";
 import { Shield01Icon, ZapIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@dodocode/ui/components/button";
@@ -14,6 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@dodocode/ui/components/dropdown-menu";
 import { cn } from "@dodocode/ui/lib/utils";
+import { Tip } from "../keys";
 
 /** A control in the row under the box: small, quiet text until it is pointed at. */
 export const QUIET =
@@ -82,5 +83,24 @@ export function AccessPicker({
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/** How each agent keeps a reviewer to reading. */
+const REVIEWER_LIMIT: Record<ProviderId, string> = {
+  codex: "A reviewer reads and reports. It runs in a read-only sandbox, so it can't change files.",
+  claude:
+    "A reviewer reads and reports. It can't edit files, and it's told not to change any with commands.",
+};
+
+/** What a reviewer may do, where the access picker would be: read. Nothing to pick. */
+export function ReviewerAccess({ provider }: { provider: ProviderId }) {
+  return (
+    <Tip label={REVIEWER_LIMIT[provider]} side="top">
+      <Button variant="ghost" size="sm" className={cn(QUIET, "shrink-0 cursor-default")}>
+        <HugeiconsIcon icon={Shield01Icon} strokeWidth={1.8} />
+        Reads only
+      </Button>
+    </Tip>
   );
 }

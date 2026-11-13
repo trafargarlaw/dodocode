@@ -173,6 +173,18 @@ export function canMerge(card: Thread, target: Thread): boolean {
   );
 }
 
+/** A task with work that can be reviewed: started, not done, and not merged. */
+export function reviewable(thread: Thread): boolean {
+  return (
+    thread.kind === "main" &&
+    thread.projectId !== undefined &&
+    thread.task !== undefined &&
+    thread.task.status !== "done" &&
+    !unstarted(thread) &&
+    thread.worktree?.mergedAt === undefined
+  );
+}
+
 // Helpers
 
 /** Pinned first, then what waits for the person, then the newest activity. */
