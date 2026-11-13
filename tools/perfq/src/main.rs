@@ -17,29 +17,30 @@ use query::Filter;
 use symbols::Symbols;
 
 const HELP: &str = "\
-perfq: what an app's time went to, read from its performance traces, a few lines at a time.
+perfq: what an app's time went to, read from its performance traces.
 
 usage: perfq <command> <runs...> [options]
 
-A run is a Chrome trace (*.trace.json, or any .json the DevTools Performance panel saves) with the
-server's CPU profile beside it (<run>.server.cpuprofile), or a CPU profile alone (*.cpuprofile).
-Name runs as files or as folders of them; several runs are read together.
+runs
+  A Chrome trace (*.trace.json, or any .json the DevTools Performance panel saves), with the
+  server's CPU profile beside it (<run>.server.cpuprofile), or a CPU profile alone (*.cpuprofile).
+  Files, or folders of them. Several runs are read together, and times are then per run: the
+  median, or for functions the mean.
 
-commands:
-  summary   each thread's busy time and what it went to, the spans, long tasks, the hottest functions
-  slow      clicks and key presses that took over 100ms (--min) to show their result, by action,
-            with what ran meanwhile; then the stretches of frames of 50ms or more that stutter
-  spans     the performance.measure() spans by name: how many, p50, p95, max
-  top       functions by CPU time: self (in the function) and total (with what it calls)
-  tree      the call tree, from the top, from a function (--root) or up to its callers (--callers)
-  tasks     the long tasks: when, what kind of work, which spans and functions ran in them
-  diff      two sets of runs, <before> <after>, with a verdict on each change
+commands
+  summary   each thread's time, the spans, tasks over 50ms, the functions with most self time
+  slow      clicks and key presses over --min (100ms), and stutters, with what ran in each
+  spans     performance.measure() spans by name
+  top       functions by self time, or by total time with --sort total
+  tree      the call tree: from the top, from a function (--root), or up to its callers (--callers)
+  tasks     a thread's tasks over --min (50ms), with what ran in each
+  diff      <before> <after>: spans, busy time and functions, each change with a verdict
 
-options:
-  --thread <name>       renderer (the default), browser (Electron's main process), server, ...
+options
+  --thread <name>       renderer (the default), browser, gpu, viz, server
   --during <span>       only the time inside spans of that name; end it with * for a prefix (call:*)
   --window <a-b>        only the time from a to b seconds into each run (1.20-1.35)
-  --limit <n>           rows to show
+  --limit <n>           rows or items to show
   --sort total          top: by total time, not self time
   --match <text>        top: only functions with it in their name or file; spans: in their name
   --root <function>     tree: start at this function (a name, or part of a name or file:line)
@@ -47,13 +48,70 @@ options:
   --depth <n>           tree: how deep to go (24)
   --min <n>             tree: leave out calls under n% of the time (1); tasks: under n ms (50);
                         slow: the ms a click or key press may take (100)
+  --help, -h            this text
 
-Times are per run, averaged, when several runs are read. Idle time is left out of CPU time.
-Our code is the app's own functions, outside node_modules.
+output
+  `key  value` is a field; a value made of parts is `name value, name value`. Tables have a
+  header row, and `-` in a cell is nothing. `## name` starts a section, `### rank  ...` an item
+  in it, ranked worst first. `next:` lists commands to run next, each with `# what it shows`.
+  Durations are wall time. `at` is seconds into the run. p50, p95: percentiles.
+
+threads
+  renderer  the page's main thread: script, style, layout, paint
+  browser   Electron's main process: input, windows, and the page's requests (fonts, IPC)
+  gpu       the GPU process's main thread: runs the GPU commands that draw frames
+  viz       the GPU process's compositor thread: puts frames together for the screen
+  server    the server's CPU profile
+  gpu and viz show only when the trace has the GPU process: one recorded by
+  apps/desktop/src/main/tracing.ts has it.
+
+fields and columns
+  busy            time in the thread's tasks (from trace), or in its CPU samples (from samples)
+  off-cpu         the part of busy the thread was off the CPU: waiting on a lock, a reply, the
+                  disk, or Windows giving it none. renderer and browser both mostly off-cpu at
+                  once: the machine paused the app.
+  idle            the stretch's length less busy
+  of run          busy as a share of the run's length
+  script style layout paint gc parse other
+                  busy by kind of work; other: in a task, none of the rest
+  self, total     time in the function itself; with what it calls. self%, total%: of busy
+  phases          an interaction, from input to its frame on screen:
+                    waiting   until its handlers started: the thread was busy with other work
+                    handlers  its event handlers
+                    render    handlers to the frame handed to the compositor: style, layout,
+                              paint, commit
+                    present   that frame to the screen: the GPU process drawing it, and the
+                              wait for the screen's next refresh
+                    drawing   render and present together, when the trace does not split them
+  fonts           lookups: fonts the page asked the browser for; answering: the browser's time
+                  answering them. The page waits for each answer, often in the middle of a layout.
+  shaders         tasks: the GPU process's shader work on its ANGLE threads: compiling shaders, or
+                  loading compiled ones from Chrome's disk cache; cpu: their CPU time. A frame
+                  that needs a shader waits for it, and gpu shows that wait as off-cpu. Large on a
+                  first use that the disk cache does not hold yet.
+  frames          the page's frames that started in the stretch. shown: reached the screen;
+                  dropped: replaced before they did; latency: start to screen, of the shown ones
+  long frames     frames of 50ms or more
+  stutter         long frames after launch, outside slow interactions, less than 1s apart
+  spans           the spans that overlap the stretch
+  our code        the app's own functions (outside node_modules) by self time, with location
+  self time       the thread's functions by self time
+  slow            slow actions: n: times done; slow: times over the budget
+  untimed         slow: clicks and key presses the app marked that Chrome did not time, because
+                  the window drew no frames then (covered or minimised). Left out of
+                  interactions and slow; `tasks --window` shows their work.
+  verdict         diff: faster, slower, less, more: a change at p<0.05; unclear: p>=0.05;
+                  too few: too few values a side to reach p<0.05; only before, only after
+  maps stale      bundles rebuilt since the run was recorded: their functions show bundle
+                  positions, not source lines
+  maps unreadable a run's <run>.maps.json, which could not be read
+  more            rows left out, and how to show them
+  cut             tree: calls deeper than --depth, left out
+
 Locations are source lines when the run saved its build's source maps (<run>.maps.json, beside
 the run), or when the bundle has a map beside it (<file>.map) and was not rebuilt since the run.
 
-examples:
+examples
   perfq summary traces/
   perfq slow traces/session
   perfq top traces/ --during startup
@@ -170,7 +228,7 @@ fn run(args: &[String]) -> Result<String, String> {
     let Some(command) = args.first() else {
         return Ok(HELP.to_string());
     };
-    if matches!(command.as_str(), "help" | "--help" | "-h") {
+    if command == "help" || args.iter().any(|a| a == "--help" || a == "-h") {
         return Ok(HELP.to_string());
     }
     let commands = ["summary", "slow", "spans", "top", "tree", "tasks", "diff"];
@@ -213,8 +271,8 @@ fn run(args: &[String]) -> Result<String, String> {
 }
 
 /// Notes go first: they say how far to trust what follows.
-fn with_notes(notes: &[String], out: String) -> String {
-    let mut text: String = notes.iter().map(|n| format!("note: {n}\n")).collect();
+fn with_notes(notes: &[(String, String)], out: String) -> String {
+    let mut text = fmt::fields("", notes);
     if !text.is_empty() {
         text.push('\n');
     }

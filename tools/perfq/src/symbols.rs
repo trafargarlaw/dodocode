@@ -45,8 +45,8 @@ pub struct Symbols {
     recorded: Option<SystemTime>,
     /// Whether each bundle changed after the run being read was recorded.
     rebuilt: HashMap<String, bool>,
-    /// What a reader should know about the locations shown, each once.
-    notes: Vec<String>,
+    /// What a reader should know about the locations shown, each once, as fields.
+    notes: Vec<(String, String)>,
     /// Bundles rebuilt since a run was recorded, whose map that run could not use.
     stale: Vec<String>,
 }
@@ -70,14 +70,11 @@ impl Symbols {
         }
     }
 
-    /// What a reader should know about the locations shown.
-    pub fn notes(&self) -> Vec<String> {
+    /// What a reader should know about the locations shown, as fields.
+    pub fn notes(&self) -> Vec<(String, String)> {
         let mut notes = self.notes.clone();
         if !self.stale.is_empty() {
-            notes.push(format!(
-                "rebuilt since some runs here were recorded, so those runs' functions in them show at bundle positions, not source lines: {}. A run recorded by apps/desktop/src/main/tracing.ts keeps the maps of its build.",
-                self.stale.join(", ")
-            ));
+            notes.push(("maps stale".to_string(), self.stale.join(", ")));
         }
         notes
     }
@@ -93,10 +90,7 @@ impl Symbols {
             .ok()
             .and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok());
         let Some(saved) = saved else {
-            self.note(format!(
-                "could not read {}, so its run maps through the maps beside the bundles",
-                manifest.display()
-            ));
+            self.note("maps unreadable", manifest.display().to_string());
             return;
         };
         let dir = manifest.parent().unwrap_or(Path::new("."));
@@ -106,7 +100,8 @@ impl Symbols {
         }
     }
 
-    fn note(&mut self, note: String) {
+    fn note(&mut self, key: &str, value: String) {
+        let note = (key.to_string(), value);
         if !self.notes.contains(&note) {
             self.notes.push(note);
         }

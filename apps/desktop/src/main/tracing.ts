@@ -6,7 +6,8 @@
 //
 // Each run writes these files to the folder, named by the time it started:
 //   <run>.trace.json         the window's trace, as the DevTools Performance panel saves one: tasks,
-//                            frames, the renderer's CPU samples and the spans in renderer/perf.ts
+//                            frames, the renderer's CPU samples and the spans in renderer/perf.ts,
+//                            from the page, the main process and the GPU process
 //   <run>.server.cpuprofile  the server's CPU samples (apps/server/src/profile.ts)
 //   <run>.maps.json          the source map of each bundle that ran, saved in maps/, so perfq
 //                            finds the run's source lines after a rebuild moves them
@@ -41,11 +42,20 @@ const CATEGORIES = [
   "latencyInfo",
 ];
 
+/** How long to wait for the GPU process before recording without it. */
+const GPU_WAIT_MS = 3000;
+const GPU_POLL_MS = 20;
+
+/**
+ * Waits for the GPU process. A recording takes in only the processes running when it starts, and
+ * the GPU process starts once the first window needs it: started before it, the trace would miss
+ * how frames are drawn and reach the screen.
+ */
 async function gpuStarted(): Promise<boolean> {
-  const deadline = Date.now() + 3000;
+  const deadline = Date.now() + GPU_WAIT_MS;
   while (Date.now() < deadline) {
     if (app.getAppMetrics().some((m) => m.type === "GPU")) return true;
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise((resolve) => setTimeout(resolve, GPU_POLL_MS));
   }
   return false;
 }
@@ -98,8 +108,7 @@ export class TraceRecorder {
     if (this.session) return;
     const session = contents.debugger;
     this.session = session;
-    const gpu = await gpuStarted();
-    process.stderr.write(`[trace] gpu process ${gpu ? "running" : "not started"}\n`);
+    if (!(await gpuStarted())) this.report("recording without the GPU process: it did not start");
     try {
       session.attach("1.3");
       await session.sendCommand("Tracing.start", {

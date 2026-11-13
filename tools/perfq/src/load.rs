@@ -11,8 +11,8 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 
 use crate::model::{
-    FuncKind, Funcs, Interaction, LONG_FRAME, LongFrame, NO_PARENT, Node, Profile, Run, Sample,
-    Slice, Span, Task, Thread, Work,
+    Frame, FuncKind, Funcs, Interaction, LONG_FRAME, LongFrame, NO_PARENT, Node, Profile, Run,
+    Sample, ShaderTask, Slice, Span, Task, Thread, Work,
 };
 use crate::symbols::{CallFrame, Symbols};
 
@@ -128,16 +128,7 @@ fn read_run(files: RunFiles, symbols: &mut Symbols) -> Result<Run, String> {
     // A file is written as its recording ends.
     let recorded = fs::metadata(source).and_then(|m| m.modified()).ok();
     symbols.begin_run(files.maps.as_deref(), recorded);
-    let mut run = Run {
-        name: files.name,
-        source: source.to_string_lossy().replace('\\', "/"),
-        start: f64::INFINITY,
-        end: f64::NEG_INFINITY,
-        threads: Vec::new(),
-        spans: Vec::new(),
-        interactions: Vec::new(),
-        long_frames: Vec::new(),
-    };
+    let mut run = Run::new(files.name, source.to_string_lossy().replace('\\', "/"));
     if let Some(path) = &files.trace {
         read_trace(path, &mut run, symbols)?;
     }
@@ -181,6 +172,9 @@ struct Event<'a> {
     ts: f64,
     #[serde(default)]
     dur: Option<f64>,
+    /// The thread's CPU time in the event.
+    #[serde(default)]
+    tdur: Option<f64>,
     #[serde(borrow, default)]
     id: Option<&'a RawValue>,
     #[serde(borrow, default)]
@@ -198,6 +192,8 @@ struct Ev<'a> {
     end: f64,
     name: &'a str,
     cat: &'a str,
+    /// The thread's CPU time in it, when the trace has it.
+    cpu: Option<f64>,
 }
 
 #[derive(Default)]
@@ -243,6 +239,9 @@ struct TimingData {
     processing_start: f64,
     #[serde(rename = "processingEnd", default)]
     processing_end: f64,
+    /// When the frame showing the event's result was handed to the compositor; 0 when not given.
+    #[serde(rename = "commitFinishTime", default)]
+    commit_finish_time: f64,
 }
 
 impl TimingData {
@@ -252,6 +251,14 @@ impl TimingData {
         let waiting = ((self.processing_start - self.time_stamp) * 1000.0).clamp(0.0, dur);
         let handling =
             ((self.processing_end - self.processing_start) * 1000.0).clamp(0.0, dur - waiting);
+        let drawing = dur - waiting - handling;
+        let (rendering, presenting) = if self.commit_finish_time >= self.processing_end {
+            let rendering =
+                ((self.commit_finish_time - self.processing_end) * 1000.0).clamp(0.0, drawing);
+            (rendering, Some(drawing - rendering))
+        } else {
+            (drawing, None)
+        };
         Interaction {
             start,
             end: start + dur,
@@ -259,9 +266,39 @@ impl TimingData {
             name: None,
             waiting,
             handling,
-            drawing: dur - waiting - handling,
+            rendering,
+            presenting,
         }
     }
+}
+
+#[derive(Deserialize)]
+struct FrameArgs {
+    #[serde(alias = "chrome_frame_reporter")]
+    frame_reporter: FrameReporter,
+}
+
+#[derive(Deserialize)]
+struct FrameReporter {
+    #[serde(default)]
+    state: String,
+}
+
+/// A frame's fate, from its PipelineReporter: shown, dropped, or None when it had nothing new.
+fn frame_shown(args: Option<&RawValue>) -> Option<bool> {
+    let args: FrameArgs = serde_json::from_str(args?.get()).ok()?;
+    match args.frame_reporter.state.as_str() {
+        "STATE_PRESENTED_ALL" | "STATE_PRESENTED_PARTIAL" => Some(true),
+        "STATE_DROPPED" => Some(false),
+        _ => None,
+    }
+}
+
+/// The browser taking one of a page's font lookups: Windows reads fonts for the page there.
+fn is_font_lookup(e: &Event) -> bool {
+    e.name == "Receive mojo message"
+        && e.args
+            .is_some_and(|a| a.get().contains("font_data_service.mojom.FontDataService"))
 }
 
 /// An interaction's longest event, and when each of its events started.
@@ -331,6 +368,9 @@ fn read_trace_text(
     let mut timed: HashMap<(&str, u64), Timed> = HashMap::new();
     let mut frames: HashMap<(&str, &str), f64> = HashMap::new();
     let mut long_frames: Vec<(&str, LongFrame)> = Vec::new();
+    // Compositor frames, begun and not yet ended, then done, by process.
+    let mut reporting: HashMap<(&str, &str), (f64, Option<bool>)> = HashMap::new();
+    let mut reported: Vec<(&str, Frame)> = Vec::new();
     let mut marks: Vec<(f64, &str)> = Vec::new();
 
     for e in &events {
@@ -349,12 +389,26 @@ fn read_trace_text(
                     names.insert(key, name.name);
                 }
             }
-            "X" => by_thread.entry(key).or_default().push(Ev {
-                start: e.ts,
-                end: e.ts + e.dur.unwrap_or(0.0),
-                name: &e.name,
-                cat: &e.cat,
-            }),
+            "X" => {
+                let end = e.ts + e.dur.unwrap_or(0.0);
+                if is_font_lookup(e) {
+                    run.font_lookups.push((e.ts, end));
+                }
+                if e.name == "ANGLEPlatformImpl::RunWorkerTask" {
+                    run.shader_tasks.push(ShaderTask {
+                        start: e.ts,
+                        end,
+                        cpu: e.tdur.unwrap_or(0.0),
+                    });
+                }
+                by_thread.entry(key).or_default().push(Ev {
+                    start: e.ts,
+                    end,
+                    name: &e.name,
+                    cat: &e.cat,
+                    cpu: e.tdur,
+                });
+            }
             "B" => begun.entry(key).or_default().push((e.ts, &e.name, &e.cat)),
             "E" => {
                 if let Some((start, name, cat)) = begun.get_mut(&key).and_then(|open| open.pop()) {
@@ -363,7 +417,22 @@ fn read_trace_text(
                         end: e.ts,
                         name,
                         cat,
+                        cpu: None,
                     });
+                }
+            }
+            "b" if e.name == "PipelineReporter" => {
+                reporting.insert((key.0, raw(e.id2.or(e.id))), (e.ts, frame_shown(e.args)));
+            }
+            "e" if e.name == "PipelineReporter" => {
+                if let Some((start, Some(shown))) = reporting.remove(&(key.0, raw(e.id2.or(e.id))))
+                {
+                    let frame = Frame {
+                        start,
+                        end: e.ts,
+                        shown,
+                    };
+                    reported.push((key.0, frame));
                 }
             }
             "b" if e.name == "EventTiming" => {
@@ -439,18 +508,33 @@ fn read_trace_text(
     let threads = label_threads(&names, &profiled, &by_thread);
     // The app's page; other renderers are DevTools or helpers.
     let app = threads.iter().find(|t| t.0 == "renderer").map(|t| t.1.0);
+    let mut timed_starts = Vec::new();
     for ((pid, _), (longest, starts)) in timed {
-        if Some(pid) == app
-            && let Some(mut interaction) = longest
-        {
+        if Some(pid) != app {
+            continue;
+        }
+        if let Some(mut interaction) = longest {
             interaction.name = mark_near(&marks, &starts).map(str::to_string);
             run.interactions.push(interaction);
         }
+        timed_starts.extend(starts);
     }
     run.interactions.sort_by(|a, b| a.start.total_cmp(&b.start));
+    timed_starts.sort_by(f64::total_cmp);
+    run.untimed = marks
+        .iter()
+        .filter(|(at, _)| !near_any(&timed_starts, *at))
+        .map(|(at, name)| (*at, name.to_string()))
+        .collect();
+    run.untimed.sort_by(|a, b| a.0.total_cmp(&b.0));
     let frames = long_frames.into_iter().filter(|f| Some(f.0) == app);
     run.long_frames.extend(frames.map(|f| f.1));
     run.long_frames.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let frames = reported.into_iter().filter(|f| Some(f.0) == app);
+    run.frames.extend(frames.map(|f| f.1));
+    run.frames.sort_by(|a, b| a.start.total_cmp(&b.start));
+    run.font_lookups.sort_by(|a, b| a.0.total_cmp(&b.0));
+    run.shader_tasks.sort_by(|a, b| a.start.total_cmp(&b.start));
 
     for (label, key) in threads {
         let mut events = by_thread.remove(&key).unwrap_or_default();
@@ -474,10 +558,18 @@ fn read_trace_text(
     Ok(())
 }
 
+/// How far apart a mark and the timed event it names may be. Both record the event's own time:
+/// they differ by rounding alone.
+const NEAR: f64 = 1000.0;
+
+/// Whether a timed event started near `at`, of the event starts in `sorted`.
+fn near_any(sorted: &[f64], at: f64) -> bool {
+    let i = sorted.partition_point(|&s| s < at - NEAR);
+    sorted.get(i).is_some_and(|&s| s <= at + NEAR)
+}
+
 /// The name of the mark left at one of an interaction's events, which start at `starts`.
 fn mark_near<'a>(marks: &[(f64, &'a str)], starts: &[f64]) -> Option<&'a str> {
-    // Both record the event's own time: they differ by rounding alone.
-    const NEAR: f64 = 1000.0;
     marks
         .iter()
         .filter_map(|&(at, name)| {
@@ -514,14 +606,20 @@ fn label_threads<'a>(
     profiled: &[Key<'a>],
     events: &HashMap<Key<'a>, Vec<Ev>>,
 ) -> Vec<(String, Key<'a>)> {
-    let mut mains: [(&str, Vec<Key>); 3] =
-        [("renderer", vec![]), ("browser", vec![]), ("gpu", vec![])];
+    let mut mains: [(&str, Vec<Key>); 4] = [
+        ("renderer", vec![]),
+        ("browser", vec![]),
+        ("gpu", vec![]),
+        ("viz", vec![]),
+    ];
     let mut others = Vec::new();
     for (key, name) in names {
         let main = match name.as_str() {
             "CrRendererMain" => 0,
             "CrBrowserMain" => 1,
             "CrGpuMain" => 2,
+            // The GPU process's thread that puts the pages' frames together for the screen.
+            "VizCompositorThread" => 3,
             _ => {
                 if profiled.contains(key) {
                     others.push((name.to_lowercase().replace(' ', "-"), *key));
@@ -564,6 +662,7 @@ fn find_tasks(events: &[Ev]) -> Vec<Task> {
             tasks.push(Task {
                 start: e.start,
                 end: e.end,
+                cpu: e.cpu,
             });
             last = e.end;
         }
@@ -864,6 +963,7 @@ mod tests {
             end,
             name,
             cat: "",
+            cpu: None,
         }
     }
 
@@ -899,9 +999,10 @@ mod tests {
     }
 
     #[test]
-    fn clicks_and_long_frames_come_from_the_app_page() {
+    fn clicks_and_frames_come_from_the_app_page() {
         // One click: its pointerdown took 20ms, its click 120ms, of which 10ms waiting for the
-        // thread and 80ms in handlers. The app marked the pointerdown, 0.3ms off by rounding.
+        // thread, 80ms in handlers, 15ms until its frame went to the compositor and 15ms more to
+        // the screen. The app marked the pointerdown, 0.3ms off by rounding.
         let trace = r#"[
             {"ph":"M","name":"thread_name","pid":1,"tid":1,"args":{"name":"CrRendererMain"}},
             {"ph":"X","name":"RunTask","cat":"toplevel","pid":1,"tid":1,"ts":1000,"dur":10},
@@ -909,7 +1010,7 @@ mod tests {
              "args":{"data":{"type":"pointerdown","interactionId":7,"timeStamp":1000,"processingStart":1000.5,"processingEnd":1001}}},
             {"ph":"e","name":"EventTiming","cat":"devtools.timeline","pid":1,"tid":1,"ts":1020000,"id2":{"local":"0x1"},"args":{}},
             {"ph":"b","name":"EventTiming","cat":"devtools.timeline","pid":1,"tid":1,"ts":1090000,"id2":{"local":"0x2"},
-             "args":{"data":{"type":"click","interactionId":7,"timeStamp":1090,"processingStart":1100,"processingEnd":1180}}},
+             "args":{"data":{"type":"click","interactionId":7,"timeStamp":1090,"processingStart":1100,"processingEnd":1180,"commitFinishTime":1195}}},
             {"ph":"e","name":"EventTiming","cat":"devtools.timeline","pid":1,"tid":1,"ts":1210000,"id2":{"local":"0x2"},"args":{}},
             {"ph":"b","name":"EventTiming","cat":"devtools.timeline","pid":1,"tid":1,"ts":3000000,"id2":{"local":"0x3"},
              "args":{"data":{"type":"mousemove","interactionId":0,"timeStamp":3000,"processingStart":3000,"processingEnd":3200}}},
@@ -922,24 +1023,23 @@ mod tests {
             {"ph":"b","name":"AnimationFrame","cat":"devtools.timeline","pid":1,"tid":1,"ts":1000000,"id2":{"local":"0x26"},"args":{}},
             {"ph":"e","name":"AnimationFrame","cat":"devtools.timeline","pid":1,"tid":1,"ts":1030000,"id2":{"local":"0x26"},"args":{}},
             {"ph":"b","name":"AnimationFrame","cat":"devtools.timeline","pid":1,"tid":1,"ts":1030000,"id2":{"local":"0x26"},"args":{}},
-            {"ph":"e","name":"AnimationFrame","cat":"devtools.timeline","pid":1,"tid":1,"ts":1090000,"id2":{"local":"0x26"},"args":{}}
+            {"ph":"e","name":"AnimationFrame","cat":"devtools.timeline","pid":1,"tid":1,"ts":1090000,"id2":{"local":"0x26"},"args":{}},
+            {"ph":"b","name":"PipelineReporter","pid":1,"tid":2,"ts":1180000,"id2":{"local":"0x5"},"args":{"frame_reporter":{"state":"STATE_PRESENTED_ALL"}}},
+            {"ph":"e","name":"PipelineReporter","pid":1,"tid":2,"ts":1210000,"id2":{"local":"0x5"},"args":{}},
+            {"ph":"b","name":"PipelineReporter","pid":1,"tid":2,"ts":1200000,"id2":{"local":"0x6"},"args":{"frame_reporter":{"state":"STATE_NO_UPDATE_DESIRED"}}},
+            {"ph":"e","name":"PipelineReporter","pid":1,"tid":2,"ts":1216000,"id2":{"local":"0x6"},"args":{}},
+            {"ph":"b","name":"PipelineReporter","pid":1,"tid":2,"ts":1216000,"id2":{"local":"0x7"},"args":{"frame_reporter":{"state":"STATE_DROPPED"}}},
+            {"ph":"e","name":"PipelineReporter","pid":1,"tid":2,"ts":1232000,"id2":{"local":"0x7"},"args":{}},
+            {"ph":"b","name":"PipelineReporter","pid":2,"tid":6,"ts":1180000,"id2":{"local":"0x5"},"args":{"frame_reporter":{"state":"STATE_PRESENTED_ALL"}}},
+            {"ph":"e","name":"PipelineReporter","pid":2,"tid":6,"ts":1190000,"id2":{"local":"0x5"},"args":{}}
         ]"#;
-        let mut run = Run {
-            name: String::new(),
-            source: String::new(),
-            start: f64::INFINITY,
-            end: f64::NEG_INFINITY,
-            threads: Vec::new(),
-            spans: Vec::new(),
-            interactions: Vec::new(),
-            long_frames: Vec::new(),
-        };
+        let mut run = Run::new(String::new(), String::new());
         read_trace_text(trace, "test", &mut run, &mut Symbols::new()).unwrap();
         let interactions: Vec<_> = run
             .interactions
             .iter()
             .map(|i| {
-                let parts = (i.waiting, i.handling, i.drawing);
+                let parts = (i.waiting, i.handling, i.rendering, i.presenting);
                 (i.start, i.end, i.event.as_str(), i.name.as_deref(), parts)
             })
             .collect();
@@ -950,11 +1050,60 @@ mod tests {
                 1_210_000.0,
                 "click",
                 Some("click button \"Board\""),
-                (10_000.0, 80_000.0, 30_000.0)
+                (10_000.0, 80_000.0, 15_000.0, Some(15_000.0))
             )]
         );
-        let frames: Vec<_> = run.long_frames.iter().map(|f| (f.start, f.end)).collect();
-        assert_eq!(frames, [(1_030_000.0, 1_090_000.0)]);
+        let long: Vec<_> = run.long_frames.iter().map(|f| (f.start, f.end)).collect();
+        assert_eq!(long, [(1_030_000.0, 1_090_000.0)]);
+        let frames: Vec<_> = run
+            .frames
+            .iter()
+            .map(|f| (f.start, f.end, f.shown))
+            .collect();
+        assert_eq!(
+            frames,
+            [
+                (1_180_000.0, 1_210_000.0, true),
+                (1_216_000.0, 1_232_000.0, false)
+            ]
+        );
+        // The click's mark has its timing; the typing's has none in the app's page.
+        assert_eq!(
+            run.untimed,
+            [(5_000_000.0, "typing in textarea".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_tasks_cpu_time_the_font_lookups_and_the_shader_tasks_come_from_the_trace() {
+        let trace = r#"[
+            {"ph":"M","name":"thread_name","pid":1,"tid":1,"args":{"name":"CrRendererMain"}},
+            {"ph":"M","name":"thread_name","pid":3,"tid":4,"args":{"name":"ThreadPoolForegroundWorker"}},
+            {"ph":"X","name":"RunTask","cat":"toplevel","pid":1,"tid":1,"ts":1000,"dur":400,"tdur":150},
+            {"ph":"X","name":"Receive mojo message","cat":"toplevel,mojom","pid":3,"tid":4,"ts":1100,"dur":60,
+             "args":{"chrome_mojo_event_info":{"mojo_interface_tag":"font_data_service.mojom.FontDataService"}}},
+            {"ph":"X","name":"Receive mojo message","cat":"toplevel,mojom","pid":3,"tid":4,"ts":1200,"dur":30,
+             "args":{"chrome_mojo_event_info":{"mojo_interface_tag":"blink.mojom.WidgetHost"}}},
+            {"ph":"X","name":"Receive mojo reply","cat":"toplevel,mojom","pid":1,"tid":1,"ts":1170,"dur":1,
+             "args":{"chrome_mojo_event_info":{"mojo_interface_tag":"font_data_service.mojom.FontDataService"}}},
+            {"ph":"X","name":"ANGLEPlatformImpl::RunWorkerTask","cat":"toplevel","pid":5,"tid":6,"ts":1300,"dur":80,"tdur":70},
+            {"ph":"X","name":"ThreadPool_RunTask","cat":"toplevel","pid":5,"tid":6,"ts":1500,"dur":40,"tdur":40}
+        ]"#;
+        let mut run = Run::new(String::new(), String::new());
+        read_trace_text(trace, "test", &mut run, &mut Symbols::new()).unwrap();
+        let tasks: Vec<_> = run.threads[0]
+            .tasks
+            .iter()
+            .map(|t| (t.start, t.end, t.cpu))
+            .collect();
+        assert_eq!(tasks, [(1000.0, 1400.0, Some(150.0))]);
+        assert_eq!(run.font_lookups, [(1100.0, 1160.0)]);
+        let shaders: Vec<_> = run
+            .shader_tasks
+            .iter()
+            .map(|s| (s.start, s.end, s.cpu))
+            .collect();
+        assert_eq!(shaders, [(1300.0, 1380.0, 70.0)]);
     }
 
     #[test]

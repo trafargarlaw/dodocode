@@ -131,12 +131,27 @@ pub struct Slice {
 pub struct Task {
     pub start: f64,
     pub end: f64,
+    /// The time the thread ran on a CPU in it, when the trace has it. The rest of the task it
+    /// waited: on a reply, a lock, the disk, or Windows giving it no CPU.
+    pub cpu: Option<f64>,
 }
 
 impl Task {
     pub fn dur(&self) -> f64 {
         self.end - self.start
     }
+
+    pub fn off_cpu(&self) -> Option<f64> {
+        self.cpu.map(|cpu| (self.dur() - cpu).max(0.0))
+    }
+}
+
+/// A thread's time in tasks over some stretch.
+#[derive(Default, Clone, Copy)]
+pub struct Busy {
+    pub busy: f64,
+    /// The part of `busy` it was off the CPU; None when no task there has its CPU time.
+    pub off_cpu: Option<f64>,
 }
 
 pub struct Thread {
@@ -159,6 +174,32 @@ impl Thread {
             let overlap = s.end.min(end) - s.start.max(start);
             if overlap > 0.0 {
                 *out.entry(s.work).or_insert(0.0) += overlap;
+            }
+        }
+        out
+    }
+
+    /// Time in tasks between `start` and `end`. A task cut by the stretch counts its share of
+    /// off-CPU time, as if spread evenly over it.
+    pub fn busy_between(&self, start: f64, end: f64) -> Busy {
+        let mut out = Busy::default();
+        let first = self.tasks.partition_point(|t| t.end <= start);
+        for t in &self.tasks[first..] {
+            if t.start >= end {
+                break;
+            }
+            let overlap = t.end.min(end) - t.start.max(start);
+            if overlap <= 0.0 {
+                continue;
+            }
+            out.busy += overlap;
+            if let Some(off) = t.off_cpu() {
+                let share = if t.dur() > 0.0 {
+                    overlap / t.dur()
+                } else {
+                    0.0
+                };
+                *out.off_cpu.get_or_insert(0.0) += off * share;
             }
         }
         out
@@ -192,8 +233,12 @@ pub struct Interaction {
     pub waiting: f64,
     /// The event's handlers.
     pub handling: f64,
-    /// From the handlers to the frame on screen: rendering, style, layout and paint.
-    pub drawing: f64,
+    /// From the handlers to the frame handed to the compositor: rendering, style, layout and
+    /// paint. When the trace does not say when that was, until the frame was on screen.
+    pub rendering: f64,
+    /// From the frame handed to the compositor to the frame on screen: the GPU process drawing
+    /// it, and waiting for the screen. None when the trace does not say.
+    pub presenting: Option<f64>,
 }
 
 impl Interaction {
@@ -217,6 +262,21 @@ pub struct LongFrame {
     pub end: f64,
 }
 
+/// A frame the page's compositor made, from its start to the screen, or to being dropped.
+pub struct Frame {
+    pub start: f64,
+    pub end: f64,
+    pub shown: bool,
+}
+
+/// A task on the GPU process's ANGLE worker threads, which compile shaders, or load compiled ones
+/// from Chrome's disk cache. A frame that needs a shader waits for it.
+pub struct ShaderTask {
+    pub start: f64,
+    pub end: f64,
+    pub cpu: f64,
+}
+
 pub struct Run {
     pub name: String,
     /// The file it was read from, for the commands perfq suggests.
@@ -229,10 +289,61 @@ pub struct Run {
     pub interactions: Vec<Interaction>,
     /// The renderer's frames of 50ms or more, in order.
     pub long_frames: Vec<LongFrame>,
+    /// The page's frames that had something new to show, in order of their start.
+    pub frames: Vec<Frame>,
+    /// Each font lookup the page asked the browser for, from the browser taking it to its answer.
+    /// The page waits for the answer, often in the middle of a layout.
+    pub font_lookups: Vec<(f64, f64)>,
+    /// The GPU process's shader tasks, in order of their start.
+    pub shader_tasks: Vec<ShaderTask>,
+    /// The clicks and key presses the app marked that Chrome did not time, by when and what, in
+    /// order. Chrome times an input once its frame is on screen, and a window that is covered or
+    /// minimised draws none.
+    pub untimed: Vec<(f64, String)>,
 }
 
 impl Run {
+    /// A run with nothing read into it yet.
+    pub fn new(name: String, source: String) -> Run {
+        Run {
+            name,
+            source,
+            start: f64::INFINITY,
+            end: f64::NEG_INFINITY,
+            threads: Vec::new(),
+            spans: Vec::new(),
+            interactions: Vec::new(),
+            long_frames: Vec::new(),
+            frames: Vec::new(),
+            font_lookups: Vec::new(),
+            shader_tasks: Vec::new(),
+            untimed: Vec::new(),
+        }
+    }
+
     pub fn thread(&self, label: &str) -> Option<&Thread> {
         self.threads.iter().find(|t| t.label == label)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_task_cut_by_the_stretch_counts_its_share_of_off_cpu_time() {
+        let task = |start, end, cpu| Task { start, end, cpu };
+        let thread = Thread {
+            label: String::new(),
+            profile: None,
+            tasks: vec![task(0.0, 100.0, Some(40.0)), task(200.0, 300.0, None)],
+            slices: Vec::new(),
+        };
+        // Half of the first task: 50 busy, 30 of them off the CPU; 50 more of the second.
+        let both = thread.busy_between(50.0, 250.0);
+        assert_eq!((both.busy, both.off_cpu), (100.0, Some(30.0)));
+        // The second alone has no CPU time to tell.
+        let second = thread.busy_between(210.0, 250.0);
+        assert_eq!((second.busy, second.off_cpu), (40.0, None));
     }
 }

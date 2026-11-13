@@ -86,6 +86,32 @@ fn slashes(path: &str) -> String {
     out
 }
 
+/// Labelled lines, `key  value`, each after `pad`, the values lined up.
+pub fn fields(pad: &str, rows: &[(String, String)]) -> String {
+    let width = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
+    let mut out = String::new();
+    for (key, value) in rows {
+        let line = format!("{pad}{key:<width$}  {value}");
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// A field's value made of named parts: `busy 120ms, off-cpu 48ms`.
+pub fn items(parts: &[(&str, String)]) -> String {
+    parts
+        .iter()
+        .map(|(name, value)| format!("{name} {value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A field, from anything that names it.
+pub fn field(key: impl Into<String>, value: impl Into<String>) -> (String, String) {
+    (key.into(), value.into())
+}
+
 pub struct Table {
     right: Vec<bool>,
     rows: Vec<Vec<String>>,

@@ -3,13 +3,12 @@
 // only pass the time on shows on one line.
 
 use std::collections::HashMap;
-use std::fmt::Write;
 
 use crate::Opts;
-use crate::fmt::{Table, arg, cell_ms, ms, pct};
+use crate::fmt::{Table, arg, cell_ms, field, fields, ms, pct};
 use crate::model::{FuncId, FuncKind, Funcs, Run};
 use crate::query::{self, Need, Tree};
-use crate::report::{hints, runs_note, scope_flags};
+use crate::report::{hints, scope_flags};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -68,42 +67,33 @@ pub fn tree(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
     let min_pct = o.min.unwrap_or(1.0);
     let base = if mode == Mode::Top { busy } else { whole };
     let min = base * min_pct / 100.0;
-    let scope = o.filter.describe(runs);
-    let note = runs_note(used);
     let mut out = String::new();
     let pattern = pattern.unwrap_or_default();
+    let mut head = vec![
+        field("thread", thread.clone()),
+        field("runs", used.to_string()),
+    ];
+    head.extend(o.filter.fields(runs));
+    head.push(field("busy", ms(busy / per)));
     match mode {
-        Mode::Top => {
-            let _ = writeln!(
-                out,
-                "{thread}: the call tree, {} busy{scope}{note}; calls under {min_pct}% ({}) left out",
-                ms(busy / per),
-                ms(min / per)
-            );
-        }
-        Mode::Root => {
-            let _ = writeln!(
-                out,
-                "{thread}: {pattern} and what it calls, {} ({} of {} busy){scope}{note}; calls under {min_pct}% of that left out",
-                ms(whole / per),
-                pct(whole, busy),
-                ms(busy / per)
-            );
-        }
-        Mode::Callers => {
-            let _ = writeln!(
-                out,
-                "{thread}: what calls {pattern}, {} ({} of {} busy){scope}{note}; each line is called by the lines indented under it, and paths under {min_pct}% are left out",
-                ms(whole / per),
-                pct(whole, busy),
-                ms(busy / per)
-            );
-        }
+        Mode::Top => {}
+        Mode::Root => head.push(field("root", pattern)),
+        Mode::Callers => head.push(field("callers of", pattern)),
     }
+    if mode != Mode::Top {
+        head.push(field("total", ms(whole / per)));
+        head.push(field("share", pct(whole, busy)));
+    }
+    let base = if mode == Mode::Top { "busy" } else { "total" };
+    head.push(field(
+        "min",
+        format!("{min_pct}% of {base}, {}", ms(min / per)),
+    ));
+    out += &fields("", &head);
     if whole <= 0.0 {
-        let _ = writeln!(out, "{pattern} did not run on {thread}{scope}");
         return Ok(out);
     }
+    out.push('\n');
 
     let mut render = Render {
         tree: &tree,
@@ -136,18 +126,19 @@ pub fn tree(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
         }
     }
     out += &table.render();
+    let mut tail = Vec::new();
     if hidden > 0 {
-        let _ = writeln!(
-            out,
-            "... {hidden} more lines: raise --min, lower --depth, or start further in with --root"
-        );
+        tail.push(field(
+            "more",
+            format!("{hidden} lines, --limit --min --depth --root"),
+        ));
     }
     if deeper {
-        let _ = writeln!(
-            out,
-            "(calls deeper than --depth {} left out)",
-            o.depth.unwrap_or(24)
-        );
+        tail.push(field("cut", format!("depth {}", o.depth.unwrap_or(24))));
+    }
+    if !tail.is_empty() {
+        out.push('\n');
+        out += &fields("", &tail);
     }
 
     // Where the most self time in the tree is, to follow it up.
@@ -166,7 +157,7 @@ pub fn tree(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
     match mode {
         Mode::Callers => next.push((
             format!("perfq tree {inputs}{flags} --root {}", arg(pattern)),
-            format!("what {pattern} calls"),
+            "callees".to_string(),
         )),
         _ => {
             if let Some(f) = hottest {
@@ -175,10 +166,7 @@ pub fn tree(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
                         "perfq tree {inputs}{flags} --callers {}",
                         arg(&query::func_arg(funcs, f))
                     ),
-                    format!(
-                        "where {}, with the most self time, is called from",
-                        funcs.get(f).name
-                    ),
+                    "most self time: callers".to_string(),
                 ));
             }
         }

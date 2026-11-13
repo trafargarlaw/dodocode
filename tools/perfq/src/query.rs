@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use crate::fmt::{at, ms};
+use crate::fmt::{at, field, items, ms};
 use crate::model::{Func, FuncId, FuncKind, Funcs, NO_PARENT, Profile, Run, Sample, Thread, Work};
 
 /// The stretches of a run a query looks at, sorted and apart; None is all of it.
@@ -78,9 +78,9 @@ impl Filter {
         ))
     }
 
-    /// The scope, for a heading: ` during startup (1 span, 723ms)`.
-    pub fn describe(&self, runs: &[Run]) -> String {
-        let mut out = String::new();
+    /// The scope, as fields: `during  startup, spans 1, total 723ms`, `window  1.200s-1.350s`.
+    pub fn fields(&self, runs: &[Run]) -> Vec<(String, String)> {
+        let mut out = Vec::new();
         if let Some(pattern) = &self.during {
             let spans: Vec<f64> = runs
                 .iter()
@@ -91,16 +91,15 @@ impl Filter {
                         .map(|s| s.dur())
                 })
                 .collect();
-            let plural = if spans.len() == 1 { "" } else { "s" };
             let total: f64 = spans.iter().sum();
-            out += &format!(
-                " during {pattern} ({} span{plural}, {} in all)",
-                spans.len(),
-                ms(total)
-            );
+            let parts = items(&[("spans", spans.len().to_string()), ("total", ms(total))]);
+            out.push(field("during", format!("{pattern}, {parts}")));
         }
         if let Some((from, to)) = self.window {
-            out += &format!(" from {} to {}", at(from * 1e6), at(to * 1e6));
+            out.push(field(
+                "window",
+                format!("{}-{}", at(from * 1e6), at(to * 1e6)),
+            ));
         }
         out
     }

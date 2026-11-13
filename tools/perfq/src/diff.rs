@@ -5,25 +5,26 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write;
 
 use crate::Opts;
-use crate::fmt::{Table, arg, ms, signed_ms, signed_pct};
+use crate::fmt::{Table, arg, field, fields, items, ms, signed_ms, signed_pct};
 use crate::model::{FuncId, Funcs, Run};
 use crate::query::{self, Need};
+use crate::report::more;
 use crate::stats::{ALPHA, can_show_change, mann_whitney, median};
 
 pub fn diff(before: &[Run], after: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "before: {} in {} | after: {} in {}",
-        count(before.len()),
-        arg(&o.inputs[0]),
-        count(after.len()),
-        arg(&o.inputs[1])
-    );
-    let _ = writeln!(
-        out,
-        "each verdict is a Mann-Whitney U test, p < {ALPHA}, which needs 4 values a side to show any change"
-    );
+    let side =
+        |runs: &[Run], path: &str| items(&[("runs", runs.len().to_string()), ("path", arg(path))]);
+    let mut head = vec![
+        field("before", side(before, &o.inputs[0])),
+        field("after", side(after, &o.inputs[1])),
+    ];
+    head.extend(o.filter.fields(before));
+    head.push(field(
+        "test",
+        format!("mann-whitney-u, two-sided, p<{ALPHA}"),
+    ));
+    out += &fields("", &head);
 
     // Spans: every instance counts.
     let (a, b) = (span_values(before), span_values(after));
@@ -40,7 +41,7 @@ pub fn diff(before: &[Run], after: &[Run], o: &Opts, funcs: &Funcs) -> Result<St
     if !names.is_empty() {
         let limit = o.limit.unwrap_or(15);
         let mut table = Table::new(&[
-            ("span (p50)", false),
+            ("span", false),
             ("n", true),
             ("before", true),
             ("after", true),
@@ -52,15 +53,10 @@ pub fn diff(before: &[Run], after: &[Run], o: &Opts, funcs: &Funcs) -> Result<St
             let vb = b.get(*name).cloned().unwrap_or_default();
             table.row(compare(name, &va, &vb, "faster", "slower"));
         }
-        out.push('\n');
+        out += "\n## spans\n";
         out += &table.render();
         if names.len() > limit {
-            let _ = writeln!(
-                out,
-                "{} more span names: --limit {}",
-                names.len() - limit,
-                names.len()
-            );
+            out += &more(names.len() - limit, names.len());
         }
     }
 
@@ -72,7 +68,7 @@ pub fn diff(before: &[Run], after: &[Run], o: &Opts, funcs: &Funcs) -> Result<St
         }
     }
     let mut table = Table::new(&[
-        ("busy per run", false),
+        ("thread", false),
         ("n", true),
         ("before", true),
         ("after", true),
@@ -90,7 +86,7 @@ pub fn diff(before: &[Run], after: &[Run], o: &Opts, funcs: &Funcs) -> Result<St
         };
         table.row(compare(label, &busy(before), &busy(after), "less", "more"));
     }
-    out.push('\n');
+    out += "\n## busy per run\n";
     out += &table.render();
 
     // Functions: self time per run.
@@ -102,8 +98,10 @@ pub fn diff(before: &[Run], after: &[Run], o: &Opts, funcs: &Funcs) -> Result<St
             .collect()
     };
     let (fa, fb) = (per_run(before), per_run(after));
+    let _ = writeln!(out, "\n## self time per run: {thread}");
     if fb.is_empty() {
-        let _ = writeln!(out, "\nthe after runs have no CPU samples on {thread}");
+        let runs = [("before", fa.len().to_string()), ("after", "0".to_string())];
+        out += &fields("", &[field("runs with samples", items(&runs))]);
         return Ok(out);
     }
     let ids: HashSet<FuncId> = fa
@@ -126,13 +124,8 @@ pub fn diff(before: &[Run], after: &[Run], o: &Opts, funcs: &Funcs) -> Result<St
         .filter(|c| c.3.abs() >= 100.0)
         .collect();
     changes.sort_by(|x, y| y.3.abs().total_cmp(&x.3.abs()));
-    let _ = writeln!(
-        out,
-        "\n{thread}, self time per run{}: the largest changes",
-        o.filter.describe(before)
-    );
     if changes.is_empty() {
-        out += "no function changed by 0.1ms or more\n";
+        out += "none\n";
         return Ok(out);
     }
     let limit = o.limit.unwrap_or(15);
@@ -156,15 +149,10 @@ pub fn diff(before: &[Run], after: &[Run], o: &Opts, funcs: &Funcs) -> Result<St
         ]);
     }
     out += &table.render();
-    Ok(out)
-}
-
-fn count(runs: usize) -> String {
-    if runs == 1 {
-        "1 run".to_string()
-    } else {
-        format!("{runs} runs")
+    if changes.len() > limit {
+        out += &more(changes.len() - limit, changes.len());
     }
+    Ok(out)
 }
 
 fn span_values(runs: &[Run]) -> BTreeMap<String, Vec<f64>> {
@@ -215,11 +203,11 @@ fn compare(what: &str, a: &[f64], b: &[f64], lower: &str, higher: &str) -> Vec<S
 
 fn verdict(a: &[f64], b: &[f64], lower: &str, higher: &str) -> String {
     if !can_show_change(a.len(), b.len()) {
-        return "too few to tell".to_string();
+        return "too few".to_string();
     }
     let p = mann_whitney(a, b);
     if p >= ALPHA {
-        return format!("no clear change (p={p:.2})");
+        return format!("unclear (p={p:.2})");
     }
     let (ma, mb) = (median(a), median(b));
     let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;

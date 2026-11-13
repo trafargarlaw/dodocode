@@ -1,41 +1,69 @@
-// The commands that read one set of runs: summary, spans, top and tasks.
+// The commands that read one set of runs: summary, spans, top and tasks. And what ran in some
+// stretches of a run, as fields, which slow and tasks print for each moment they list.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 
 use crate::Opts;
-use crate::fmt::{Table, arg, at, cell_ms, ms, pct, seconds};
+use crate::fmt::{Table, arg, at, cell_ms, field, fields, items, ms, pct, seconds};
 use crate::model::{FuncId, FuncKind, Funcs, Run, Task, Thread, WORKS, Work};
 use crate::query::{self, Filter, Need};
 use crate::stats::{median, percentile};
 
 const LONG_TASK_US: f64 = 50_000.0;
+/// The threads a moment's fields show, besides the one it is about: the page, Electron's main
+/// process, and the GPU process's main thread and the one that puts frames together for the screen.
+const SHOWN: [&str; 4] = ["renderer", "browser", "gpu", "viz"];
 
 pub fn summary(runs: &[Run], o: &Opts, funcs: &Funcs) -> String {
     let mut out = String::new();
     let inputs = o.input_args();
     let length = median(&runs.iter().map(|r| r.end - r.start).collect::<Vec<_>>());
+    let mut head = vec![field("runs", runs.len().to_string())];
     if runs.len() == 1 {
-        let _ = writeln!(out, "1 run, {}: {}", seconds(length), runs[0].name);
+        head.push(field("run", runs[0].name.clone()));
+        head.push(field("length", seconds(length)));
     } else {
-        let _ = writeln!(
-            out,
-            "{} runs, {} each (median). Busy times are medians per run; spans count every instance.",
-            runs.len(),
-            seconds(length)
-        );
+        head.push(field("length-p50", seconds(length)));
     }
+    if runs.iter().any(|r| !r.font_lookups.is_empty()) {
+        let per_run = |f: &dyn Fn(&Run) -> f64| median(&runs.iter().map(f).collect::<Vec<_>>());
+        let lookups = per_run(&|r| r.font_lookups.len() as f64);
+        let answering = per_run(&|r| r.font_lookups.iter().map(|f| f.1 - f.0).sum());
+        let parts = [
+            ("lookups", format!("{lookups:.0}")),
+            ("answering", ms(answering)),
+        ];
+        head.push(field("fonts", items(&parts)));
+    }
+    if runs.iter().any(|r| !r.shader_tasks.is_empty()) {
+        let per_run = |f: &dyn Fn(&Run) -> f64| median(&runs.iter().map(f).collect::<Vec<_>>());
+        let tasks = per_run(&|r| r.shader_tasks.len() as f64);
+        let cpu = per_run(&|r| r.shader_tasks.iter().map(|s| s.cpu).sum());
+        let parts = [("tasks", format!("{tasks:.0}")), ("cpu", ms(cpu))];
+        head.push(field("shaders", items(&parts)));
+    }
+    out += &fields("", &head);
 
     // Each thread's busy time, by kind of work.
     let labels = query::labels(runs);
     let mut rows = Vec::new();
     let mut used = [false; WORKS.len()];
-    let mut sampled_only = Vec::new();
     for label in &labels {
-        let threads: Vec<_> = runs.iter().filter_map(|r| r.thread(label)).collect();
-        let works: Vec<HashMap<Work, f64>> =
-            threads.iter().map(|t| query::work_in(t, &None)).collect();
+        let threads: Vec<(&Run, &Thread)> = runs
+            .iter()
+            .filter_map(|r| r.thread(label).map(|t| (r, t)))
+            .collect();
+        let works: Vec<HashMap<Work, f64>> = threads
+            .iter()
+            .map(|(_, t)| query::work_in(t, &None))
+            .collect();
         let busy = median(&works.iter().map(|m| m.values().sum()).collect::<Vec<f64>>());
+        let off: Vec<f64> = threads
+            .iter()
+            .filter_map(|(r, t)| t.busy_between(r.start, r.end).off_cpu)
+            .collect();
+        let off_cpu = (!off.is_empty()).then(|| median(&off));
         let by_work: Vec<f64> = WORKS
             .iter()
             .map(|w| {
@@ -50,21 +78,34 @@ pub fn summary(runs: &[Run], o: &Opts, funcs: &Funcs) -> String {
         for (i, v) in by_work.iter().enumerate() {
             used[i] |= *v >= 500.0;
         }
-        if threads.iter().all(|t| t.tasks.is_empty()) && threads.iter().any(|t| t.profile.is_some())
-        {
-            sampled_only.push(label.clone());
-        }
-        rows.push((label.clone(), busy, by_work));
+        let from = if threads.iter().all(|(_, t)| t.tasks.is_empty()) {
+            "samples"
+        } else {
+            "trace"
+        };
+        rows.push((label.clone(), from, busy, off_cpu, by_work));
     }
-    let mut columns = vec![("thread", false), ("busy", true), ("of run", true)];
+    let mut columns = vec![
+        ("thread", false),
+        ("from", false),
+        ("busy", true),
+        ("of run", true),
+        ("off-cpu", true),
+    ];
     for (i, w) in WORKS.iter().enumerate() {
         if used[i] {
             columns.push((w.label(), true));
         }
     }
     let mut table = Table::new(&columns);
-    for (label, busy, by_work) in rows {
-        let mut cells = vec![label, ms(busy), pct(busy, length)];
+    for (label, from, busy, off_cpu, by_work) in rows {
+        let mut cells = vec![
+            label,
+            from.to_string(),
+            ms(busy),
+            pct(busy, length),
+            off_cpu.map_or("-".to_string(), cell_ms),
+        ];
         for (i, v) in by_work.iter().enumerate() {
             if used[i] {
                 cells.push(cell_ms(*v));
@@ -72,35 +113,33 @@ pub fn summary(runs: &[Run], o: &Opts, funcs: &Funcs) -> String {
         }
         table.row(cells);
     }
-    out.push('\n');
+    out += "\n## threads\n";
     out += &table.render();
-    if !sampled_only.is_empty() {
-        let _ = writeln!(
-            out,
-            "{}: from CPU samples alone, which tell script and gc apart from the rest, no more",
-            sampled_only.join(", ")
-        );
-    }
 
     // Spans.
     let groups = span_groups(runs, None);
-    out.push('\n');
+    out += "\n## spans\n";
     if groups.is_empty() {
-        out += "no spans: the runs have no performance.measure() calls\n";
+        out += "none\n";
     } else {
         out += &span_table(&groups, 8, runs.len());
         if groups.len() > 8 {
-            let _ = writeln!(
-                out,
-                "{} more span names: perfq spans {inputs}",
-                groups.len() - 8
-            );
+            out += &fields("", &[field("more", format!("{} names", groups.len() - 8))]);
         }
     }
 
     // Long tasks.
-    out.push('\n');
     let mut long_on = Vec::new();
+    let mut columns = vec![
+        ("thread", false),
+        ("n", true),
+        ("longest", true),
+        ("at", true),
+    ];
+    if runs.len() > 1 {
+        columns.push(("run", false));
+    }
+    let mut long_table = Table::new(&columns);
     for label in &labels {
         let mut long: Vec<(&Run, &Task)> = runs
             .iter()
@@ -117,61 +156,68 @@ pub fn summary(runs: &[Run], o: &Opts, funcs: &Funcs) -> String {
         }
         long.sort_by(|a, b| b.1.dur().total_cmp(&a.1.dur()));
         let (run, task) = long[0];
-        let place = if runs.len() == 1 {
-            format!("at {}", at(task.start - run.start))
-        } else {
-            format!("at {} in {}", at(task.start - run.start), run.name)
-        };
-        let count = if runs.len() == 1 {
-            long.len().to_string()
-        } else {
-            format!("{} in {} runs", long.len(), runs.len())
-        };
-        let _ = writeln!(
-            out,
-            "{label}: {count} tasks of 50ms or more, the longest {} {place}",
-            ms(task.dur())
-        );
+        let mut cells = vec![
+            label.clone(),
+            long.len().to_string(),
+            ms(task.dur()),
+            at(task.start - run.start),
+        ];
+        if runs.len() > 1 {
+            cells.push(run.name.clone());
+        }
+        long_table.row(cells);
         long_on.push(label.clone());
     }
-    if long_on.is_empty()
-        && runs
-            .iter()
-            .any(|r| r.threads.iter().any(|t| !t.tasks.is_empty()))
+    if runs
+        .iter()
+        .any(|r| r.threads.iter().any(|t| !t.tasks.is_empty()))
     {
-        out += "no task took 50ms or more\n";
+        let _ = writeln!(out, "\n## tasks over {}", ms(LONG_TASK_US));
+        if long_on.is_empty() {
+            out += "none\n";
+        } else {
+            out += &long_table.render();
+        }
     }
 
     // Where the time went.
     let thread = query::pick_thread(runs, o.thread.as_deref(), Need::Samples).ok();
     if let Some(thread) = &thread {
         let w = query::weigh(runs, thread, &Filter::default(), funcs);
+        let per = w.runs.max(1) as f64;
         let mut hot: Vec<(FuncId, f64)> = w.self_us.iter().map(|(&f, &t)| (f, t)).collect();
         hot.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let items: Vec<String> = hot
-            .iter()
-            .take(5)
-            .map(|(f, t)| format!("{} {}", query::short_name(funcs, *f), pct(*t, w.busy)))
-            .collect();
-        if !items.is_empty() {
-            let _ = writeln!(out, "most self time on {thread}: {}", items.join(", "));
+        if !hot.is_empty() {
+            let _ = writeln!(out, "\n## self time: {thread}");
+            let mut table = Table::new(&[("self", true), ("self%", true), ("function", false)]);
+            for (f, t) in hot.iter().take(5) {
+                table.row(vec![
+                    ms(t / per),
+                    pct(*t, w.busy),
+                    query::short_name(funcs, *f),
+                ]);
+            }
+            out += &table.render();
         }
     }
 
     let mut next = Vec::new();
+    if runs.iter().any(|r| !r.interactions.is_empty()) {
+        next.push((
+            format!("perfq slow {inputs}"),
+            "slow interactions, stutters",
+        ));
+    }
     if let Some(thread) = &thread {
         let flag = thread_flag(thread);
-        next.push((
-            format!("perfq top {inputs}{flag}"),
-            format!("where the {thread}'s time goes, function by function"),
-        ));
+        next.push((format!("perfq top {inputs}{flag}"), "functions"));
     }
     if !long_on.is_empty() {
         let flag = thread_flag(&long_on[0]);
-        next.push((
-            format!("perfq tasks {inputs}{flag}"),
-            "the long tasks, and what ran in them".to_string(),
-        ));
+        next.push((format!("perfq tasks {inputs}{flag}"), "long tasks"));
+    }
+    if groups.len() > 8 {
+        next.push((format!("perfq spans {inputs}"), "every span name"));
     }
     let slowest = |prefix: &str| {
         groups
@@ -183,7 +229,7 @@ pub fn summary(runs: &[Run], o: &Opts, funcs: &Funcs) -> String {
     if let Some(span) = slowest("") {
         next.push((
             format!("perfq top {inputs} --during {}", arg(&span)),
-            "what ran during the slowest span".to_string(),
+            "slowest span: functions",
         ));
     }
     if labels.iter().any(|l| l == "server")
@@ -191,17 +237,8 @@ pub fn summary(runs: &[Run], o: &Opts, funcs: &Funcs) -> String {
     {
         next.push((
             format!("perfq top {inputs} --thread server --during {}", arg(&call)),
-            "the server's work while the slowest call waited on it".to_string(),
+            "slowest call: server functions",
         ));
-    }
-    if runs.iter().any(|r| !r.interactions.is_empty()) {
-        next.insert(
-            0,
-            (
-                format!("perfq slow {inputs}"),
-                "the clicks and key presses that took long, and the stutters".to_string(),
-            ),
-        );
     }
     out += &hints(&next);
     out
@@ -210,31 +247,22 @@ pub fn summary(runs: &[Run], o: &Opts, funcs: &Funcs) -> String {
 pub fn spans(runs: &[Run], o: &Opts) -> String {
     let mut out = String::new();
     let groups = span_groups(runs, o.matching.as_deref());
-    let matching = o
-        .matching
-        .as_ref()
-        .map_or(String::new(), |m| format!(" with {m} in their names"));
-    let plural = if runs.len() == 1 { "" } else { "s" };
+    let count: usize = groups.iter().map(|g| g.1.len()).sum();
+    let mut head = vec![field("runs", runs.len().to_string())];
+    if let Some(m) = &o.matching {
+        head.push(field("match", m.clone()));
+    }
+    head.push(field("spans", count.to_string()));
+    head.push(field("names", groups.len().to_string()));
+    out += &fields("", &head);
     if groups.is_empty() {
-        let _ = writeln!(out, "no spans{matching} in {} run{plural}", runs.len());
         return out;
     }
-    let count: usize = groups.iter().map(|g| g.1.len()).sum();
-    let _ = writeln!(
-        out,
-        "{count} spans under {} names{matching}, in {} run{plural}; most time first",
-        groups.len(),
-        runs.len()
-    );
     let limit = o.limit.unwrap_or(30);
+    out.push('\n');
     out += &span_table(&groups, limit, runs.len());
     if groups.len() > limit {
-        let _ = writeln!(
-            out,
-            "{} more: --limit {}",
-            groups.len() - limit,
-            groups.len()
-        );
+        out += &more(groups.len() - limit, groups.len());
     }
     let slowest = groups
         .iter()
@@ -243,7 +271,7 @@ pub fn spans(runs: &[Run], o: &Opts) -> String {
         let inputs = o.input_args();
         out += &hints(&[(
             format!("perfq top {inputs} --during {}", arg(name)),
-            "what ran during the slowest one".to_string(),
+            "slowest span: functions",
         )]);
     }
     out
@@ -298,18 +326,6 @@ pub fn top(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
     o.filter.check(runs)?;
     let w = query::weigh(runs, &thread, &o.filter, funcs);
     let per = w.runs.max(1) as f64;
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{thread}: {} busy{}{}; idle time left out",
-        ms(w.busy / per),
-        o.filter.describe(runs),
-        runs_note(w.runs)
-    );
-    if w.busy <= 0.0 {
-        out += "nothing ran then\n";
-        return Ok(out);
-    }
     let pattern = o.matching.as_ref().map(|m| m.to_lowercase());
     let self_of = |f: &FuncId| w.self_us.get(f).copied().unwrap_or(0.0);
     let total_of = |f: &FuncId| w.total_us.get(f).copied().unwrap_or(0.0);
@@ -333,6 +349,28 @@ pub fn top(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
                 .then(total_of(b).total_cmp(&total_of(a)))
         });
     }
+
+    let mut out = String::new();
+    let mut head = vec![
+        field("thread", thread.clone()),
+        field("runs", w.runs.to_string()),
+    ];
+    head.extend(o.filter.fields(runs));
+    head.push(field("busy", ms(w.busy / per)));
+    if let Some(m) = &o.matching {
+        let matched: f64 = ids.iter().map(self_of).sum();
+        head.push(field("match", m.clone()));
+        head.push(field("functions", ids.len().to_string()));
+        head.push(field(
+            "self",
+            format!("{} {}", ms(matched / per), pct(matched, w.busy)),
+        ));
+    }
+    out += &fields("", &head);
+    if w.busy <= 0.0 {
+        return Ok(out);
+    }
+
     let limit = o.limit.unwrap_or(20);
     let mut table = Table::new(&[
         ("self", true),
@@ -355,7 +393,7 @@ pub fn top(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
     }
     if ids.len() > limit {
         let rest: f64 = ids[limit..].iter().map(self_of).sum();
-        let more = format!("{} more functions", ids.len() - limit);
+        let more = format!("({} more functions)", ids.len() - limit);
         table.row(vec![
             cell_ms(rest / per),
             pct(rest, w.busy),
@@ -365,17 +403,8 @@ pub fn top(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
             String::new(),
         ]);
     }
+    out.push('\n');
     out += &table.render();
-    if let Some(m) = &o.matching {
-        let matched: f64 = ids.iter().map(self_of).sum();
-        let _ = writeln!(
-            out,
-            "{} functions have {m}: {} self time in all ({})",
-            ids.len(),
-            ms(matched / per),
-            pct(matched, w.busy)
-        );
-    }
 
     let js = |f: &&FuncId| funcs.get(**f).kind == FuncKind::Js;
     let scope = scope_flags(o, &thread);
@@ -391,7 +420,7 @@ pub fn top(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
                 "perfq tree {inputs}{scope} --callers {}",
                 arg(&query::func_arg(funcs, f))
             ),
-            format!("where {} is called from", funcs.get(f).name),
+            "most self time: callers",
         ));
     }
     if let Some(&f) = ids
@@ -404,7 +433,7 @@ pub fn top(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
                 "perfq tree {inputs}{scope} --root {}",
                 arg(&query::func_arg(funcs, f))
             ),
-            format!("what {} spends its time on", funcs.get(f).name),
+            "most total time: callees",
         ));
     }
     out += &hints(&next);
@@ -438,102 +467,158 @@ pub fn tasks(runs: &[Run], o: &Opts, funcs: &Funcs) -> Result<String, String> {
     }
     long.sort_by(|a, b| b.1.dur().total_cmp(&a.1.dur()));
     let mut out = String::new();
-    let scope = o.filter.describe(runs);
+    let mut head = vec![
+        field("thread", thread.clone()),
+        field("runs", runs.len().to_string()),
+    ];
+    head.extend(o.filter.fields(runs));
+    head.extend([
+        field("tasks", count.to_string()),
+        field("min", ms(min)),
+        field("long", long.len().to_string()),
+        field("longest", ms(longest)),
+    ]);
+    out += &fields("", &head);
     if long.is_empty() {
-        let _ = writeln!(
-            out,
-            "{thread}: none of {count} tasks{scope} took {} or more; the longest took {}",
-            ms(min),
-            ms(longest)
-        );
         return Ok(out);
     }
-    let _ = writeln!(
-        out,
-        "{thread}: {} of {count} tasks{scope} took {} or more{}; longest first",
-        long.len(),
-        ms(min),
-        runs_note(runs.len())
-    );
+
+    let _ = writeln!(out, "\n## tasks over {}", ms(min));
     let limit = o.limit.unwrap_or(10);
-    for (run, task) in long.iter().take(limit) {
-        let t = run.thread(&thread).unwrap();
-        let place = if runs.len() > 1 {
-            format!(" in {}", run.name)
-        } else {
-            String::new()
-        };
+    for (rank, (run, task)) in long.iter().take(limit).enumerate() {
         let _ = writeln!(
             out,
-            "\n{:>7}  at {}{place}: {}",
+            "\n### {}  {}  at {}{}",
+            rank + 1,
             ms(task.dur()),
             at(task.start - run.start),
-            works_in(t, &[(task.start, task.end)])
+            run_place(runs, run)
         );
-        out += &what_ran(run, &thread, &[(task.start, task.end)], funcs, "         ");
+        out += &fields("", &details(run, &thread, &[(task.start, task.end)], funcs));
     }
     if long.len() > limit {
-        let _ = writeln!(out, "\n{} more: --limit {}", long.len() - limit, long.len());
+        out.push('\n');
+        out += &more(long.len() - limit, long.len());
     }
     let (run, task) = long[0];
-    let from = ((task.start - run.start) / 1000.0).floor() / 1000.0;
-    let to = ((task.end - run.start) / 1000.0).ceil() / 1000.0;
-    let source = arg(&run.source);
-    let flag = thread_flag(&thread);
-    out += &hints(&[
-        (
-            format!("perfq top {source}{flag} --window {from:.3}-{to:.3}"),
-            "the longest task, function by function".to_string(),
-        ),
-        (
-            format!("perfq tree {source}{flag} --window {from:.3}-{to:.3}"),
-            "the longest task, as a call tree".to_string(),
-        ),
-    ]);
+    out += &hints(&look(run, task.start, task.end, &thread, "longest task"));
     Ok(out)
 }
 
-/// What a thread's time in some stretches went to, by kind of work: `script 120ms, layout 30ms`.
-pub fn works_in(t: &Thread, windows: &[(f64, f64)]) -> String {
-    let mut works: HashMap<Work, f64> = HashMap::new();
-    for &(start, end) in windows {
-        for (w, v) in t.work_between(start, end) {
-            *works.entry(w).or_insert(0.0) += v;
-        }
-    }
-    let mut works: Vec<(Work, f64)> = works.into_iter().filter(|(_, v)| *v >= 100.0).collect();
-    works.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let works: Vec<String> = works
-        .iter()
-        .map(|(w, v)| format!("{} {}", w.label(), ms(*v)))
-        .collect();
-    works.join(", ")
-}
-
-/// What ran on a thread in some stretches of a run, a line each, after `pad`: the spans they
-/// overlap, the app's own functions that led to the work, and the functions that took the most
-/// time themselves.
-pub fn what_ran(
+/// What ran in some stretches of a run, as fields: each thread's time there, the font lookups and
+/// frames in them, the spans they overlap, and the functions that ran. `focus` is the thread the
+/// stretches are about: its time is split by kind of work, and the functions are its own.
+pub fn details(
     run: &Run,
-    thread: &str,
+    focus: &str,
     windows: &[(f64, f64)],
     funcs: &Funcs,
-    pad: &str,
-) -> String {
-    let mut out = String::new();
-    let mut spans: Vec<&str> = Vec::new();
-    for s in run
-        .spans
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let length: f64 = windows.iter().map(|w| w.1 - w.0).sum();
+    let overlaps = |a: f64, b: f64| windows.iter().any(|w| a < w.1 && b > w.0);
+
+    let mut labels: Vec<&str> = SHOWN.to_vec();
+    if !labels.contains(&focus) {
+        labels.insert(0, focus);
+    }
+    for label in labels {
+        let Some(t) = run.thread(label) else {
+            continue;
+        };
+        let mut works: HashMap<Work, f64> = HashMap::new();
+        for &(a, b) in windows {
+            for (w, v) in t.work_between(a, b) {
+                *works.entry(w).or_insert(0.0) += v;
+            }
+        }
+        let mut busy: f64 = works.values().sum();
+        let mut off_cpu = None;
+        if !t.tasks.is_empty() {
+            busy = 0.0;
+            for &(a, b) in windows {
+                let here = t.busy_between(a, b);
+                busy += here.busy;
+                if let Some(off) = here.off_cpu {
+                    *off_cpu.get_or_insert(0.0) += off;
+                }
+            }
+        }
+        let mut parts = vec![("busy", ms(busy))];
+        if let Some(off) = off_cpu {
+            parts.push(("off-cpu", ms(off)));
+        }
+        parts.push(("idle", ms((length - busy).max(0.0))));
+        if label == focus {
+            let mut works: Vec<(Work, f64)> =
+                works.into_iter().filter(|(_, v)| *v >= 100.0).collect();
+            works.sort_by(|a, b| b.1.total_cmp(&a.1));
+            parts.extend(works.iter().map(|(w, v)| (w.label(), ms(*v))));
+        }
+        out.push(field(label, items(&parts)));
+    }
+
+    let lookups: Vec<f64> = run
+        .font_lookups
         .iter()
-        .filter(|s| windows.iter().any(|w| s.start < w.1 && s.end > w.0))
-    {
+        .filter(|f| overlaps(f.0, f.1))
+        .map(|f| f.1 - f.0)
+        .collect();
+    if !lookups.is_empty() {
+        let parts = [
+            ("lookups", lookups.len().to_string()),
+            ("answering", ms(lookups.iter().sum())),
+        ];
+        out.push(field("fonts", items(&parts)));
+    }
+
+    let shaders: Vec<f64> = run
+        .shader_tasks
+        .iter()
+        .filter(|s| overlaps(s.start, s.end))
+        .map(|s| s.cpu)
+        .collect();
+    if !shaders.is_empty() {
+        let parts = [
+            ("tasks", shaders.len().to_string()),
+            ("cpu", ms(shaders.iter().sum())),
+        ];
+        out.push(field("shaders", items(&parts)));
+    }
+
+    let frames: Vec<_> = run
+        .frames
+        .iter()
+        .filter(|f| windows.iter().any(|w| f.start >= w.0 && f.start < w.1))
+        .collect();
+    if !frames.is_empty() {
+        let mut shown: Vec<f64> = frames
+            .iter()
+            .filter(|f| f.shown)
+            .map(|f| f.end - f.start)
+            .collect();
+        shown.sort_by(f64::total_cmp);
+        let mut parts = vec![
+            ("shown", shown.len().to_string()),
+            ("dropped", (frames.len() - shown.len()).to_string()),
+        ];
+        if let Some(&max) = shown.last() {
+            parts.push(("latency-p50", ms(percentile(&shown, 50.0))));
+            parts.push(("latency-max", ms(max)));
+        }
+        out.push(field("frames", items(&parts)));
+    }
+
+    let mut spans: Vec<&str> = Vec::new();
+    for s in run.spans.iter().filter(|s| overlaps(s.start, s.end)) {
         if !spans.contains(&s.name.as_str()) {
             spans.push(&s.name);
         }
     }
     if !spans.is_empty() {
-        let _ = writeln!(out, "{pad}in spans: {}", spans.join(", "));
+        out.push(field("spans", spans.join(", ")));
     }
+
     let top = |weights: HashMap<FuncId, f64>, n: usize, loc: bool| {
         let mut hot: Vec<(FuncId, f64)> = weights.into_iter().filter(|w| w.1 >= 100.0).collect();
         hot.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -551,28 +636,51 @@ pub fn what_ran(
             .join(", ")
     };
     let windows = Some(windows.to_vec());
-    if let Some(own) = query::weigh_own(run, thread, &windows, funcs) {
+    if let Some(own) = query::weigh_own(run, focus, &windows, funcs) {
         let own = top(own, 3, true);
         if !own.is_empty() {
-            let _ = writeln!(out, "{pad}our code, with what it called: {own}");
+            out.push(field("our code", own));
         }
     }
-    if let Some(w) = query::weigh_run(run, thread, &windows, funcs) {
+    if let Some(w) = query::weigh_run(run, focus, &windows, funcs) {
         let hot = top(w.self_us, 5, false);
         if !hot.is_empty() {
-            let _ = writeln!(out, "{pad}most self time: {hot}");
+            out.push(field("self time", hot));
         }
     }
     out
 }
 
-/// `, 5 runs, per run`: how the numbers were added up.
-pub fn runs_note(runs: usize) -> String {
-    if runs > 1 {
-        format!(", per run over {runs} runs")
+/// `  run <name>`, when several runs are read and a moment needs to say which it is from.
+pub fn run_place(runs: &[Run], run: &Run) -> String {
+    if runs.len() > 1 {
+        format!("  run {}", run.name)
     } else {
         String::new()
     }
+}
+
+/// The rows a list left out, and the option that shows them.
+pub fn more(hidden: usize, all: usize) -> String {
+    fields("", &[field("more", format!("{hidden}, --limit {all}"))])
+}
+
+/// The commands that look into a stretch of a run, function by function and as a call tree.
+pub fn look(run: &Run, start: f64, end: f64, thread: &str, what: &str) -> Vec<(String, String)> {
+    let from = ((start - run.start) / 1000.0).floor() / 1000.0;
+    let to = ((end - run.start) / 1000.0).ceil() / 1000.0;
+    let source = arg(&run.source);
+    let flag = thread_flag(thread);
+    vec![
+        (
+            format!("perfq top {source}{flag} --window {from:.3}-{to:.3}"),
+            format!("{what}: functions"),
+        ),
+        (
+            format!("perfq tree {source}{flag} --window {from:.3}-{to:.3}"),
+            format!("{what}: call tree"),
+        ),
+    ]
 }
 
 pub fn thread_flag(thread: &str) -> String {
@@ -596,13 +704,13 @@ pub fn scope_flags(o: &Opts, thread: &str) -> String {
 }
 
 /// Commands to run next, each with what it shows.
-pub fn hints(next: &[(String, String)]) -> String {
+pub fn hints<T: AsRef<str>>(next: &[(String, T)]) -> String {
     if next.is_empty() {
         return String::new();
     }
     let mut out = String::from("\nnext:\n");
     for (command, what) in next {
-        let _ = writeln!(out, "  {command}  # {what}");
+        let _ = writeln!(out, "  {command}  # {}", what.as_ref());
     }
     out
 }

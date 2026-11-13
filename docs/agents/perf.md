@@ -29,14 +29,18 @@ Put recordings outside the repository: each one is tens of MB. `pnpm trace` buil
    Use the app, then close its window. The recording is written as the window closes, and holds
    about 4 busy minutes. To drive the app yourself, add `--remote-debugging-port=<a free port>` and
    send input through the DevTools protocol (`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`).
-   Close it from outside, as the close button does. A `window.close()` from the page ends it before
-   the recording is written.
+   On Windows add `--disable-features=CalculateNativeWinOcclusion` too: a window under other
+   windows draws no frames, so Chrome times none of its input, and `perfq slow` lists that input as
+   `untimed`. Close it from outside, as the close button does. A `window.close()` from the page ends
+   it before the recording is written.
 
    Done when `pnpm trace` prints its `read it with:` line.
 
 2. **Read it.** Run `pnpm perfq slow <trace>`. It lists the clicks and key presses that took over
-   100ms (`--min`) to show their result, split into waiting, handlers and drawing, and the stutters
-   (frames of 50ms or more), each with the code that ran. Actions are named by the marks
+   100ms (`--min`) to show their result, split into `phases` (waiting, handlers, render, present),
+   and the stutters (frames of 50ms or more), each with every thread's time and the code that ran.
+   The [perfq README](../../tools/perfq/README.md#reading-a-slow-moment) says which fields point
+   at the app's code and which at Windows or the GPU process. Actions are named by the marks
    `apps/desktop/src/renderer/perf.ts` leaves. Follow its `next:` lines to go function by function.
 
    Done when, for each slow action, you can name its time, which part took it, and the function
@@ -59,9 +63,9 @@ Put recordings outside the repository: each one is tens of MB. `pnpm trace` buil
    `.trace.json` with its `.server.cpuprofile` and `.maps.json`.
 
 2. **Find the cost.** Run `pnpm perfq summary <scratch>/before` and follow its `next:` lines.
-   There are three threads: the renderer is the UI, the browser is Electron's main process, and
-   the server is `apps/server`. To time a stretch of renderer code that no span covers yet, wrap it
-   in a span from `apps/desktop/src/renderer/perf.ts`.
+   The threads: the renderer is the UI, the browser is Electron's main process, gpu and viz are
+   the GPU process, and the server is `apps/server`. To time a stretch of renderer code that no
+   span covers yet, wrap it in a span from `apps/desktop/src/renderer/perf.ts`.
 
    Done when you can name the function, its `file:line`, its milliseconds per run, and whether it
    sits inside what the person waits on: a slow action, `startup`, a `call:*`, a `feed:*`.
