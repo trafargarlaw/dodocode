@@ -620,7 +620,16 @@ export class App implements ThreadContext {
       images: [],
       app: { kind: "findings", reviewId: thread.id },
     }).catch((error: unknown) => {
-      runtime.note(`The findings couldn't go to the task: ${errorText(error)}`);
+      // Marked sent before sending, so a second end of turn doesn't send them twice. Unsent, they
+      // go again at the next one.
+      const current = runtime.thread.review;
+      if (current) {
+        const { sentAt: _, ...unsent } = current;
+        runtime.replace({ ...runtime.thread, review: unsent });
+      }
+      runtime.note(
+        `The findings couldn't go to the task, so they wait here. Send the reviewer a message, and they go when its turn ends. What went wrong: ${errorText(error)}`,
+      );
     });
   }
 
