@@ -396,20 +396,29 @@ export class App implements ThreadContext {
 
   answerFindings(from: Thread, answers: FindingAnswerRequest[]): string {
     const task = this.rootOf(from);
-    const latest = this.reviewsOf(task.id).findLast(
-      (review) => review.review?.sentAt !== undefined,
+    const sent = this.reviewsOf(task.id).flatMap((thread) =>
+      thread.review?.sentAt !== undefined ? [{ id: thread.id, review: thread.review }] : [],
     );
-    if (!latest?.review) {
+    if (sent.length === 0) {
       throw new Error("No review's findings were sent to you, so there is nothing to answer.");
     }
-    const runtime = this.runtime(latest.id);
-    const review = answered(latest.review, answers);
-    runtime.replace({ ...runtime.thread, review });
-    const open = review.findings.filter((finding) => !finding.answer).map((finding) => finding.id);
+    // An answer can be for any review sent, not only the latest: the agent may answer one late.
+    const reviews = answered(
+      sent.map((entry) => entry.review),
+      answers,
+    );
+    sent.forEach((entry, index) => {
+      const review = reviews[index]!;
+      if (review === entry.review) return;
+      const runtime = this.runtime(entry.id);
+      runtime.replace({ ...runtime.thread, review });
+    });
+    const findings = reviews.flatMap((review) => review.findings);
+    const open = findings.filter((finding) => !finding.answer).map((finding) => finding.id);
     return [
       "Recorded your answers, which the person sees with the findings.",
       open.length > 0 ? `Still to answer: ${open.join(", ")}.` : "",
-      disputesWaiting(review).length > 0
+      reviews.some((review) => disputesWaiting(review).length > 0)
         ? "The person decides on what you disputed. If they want one fixed anyway, you'll hear."
         : "",
     ]

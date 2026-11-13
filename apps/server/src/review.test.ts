@@ -60,18 +60,24 @@ describe("reporting", () => {
 });
 
 describe("answering", () => {
-  test("the agent's answers go into their findings, and an unknown id is refused", () => {
-    const next = answered(review([finding("f1"), finding("f2"), finding("f3")]), [
-      { id: "f1", outcome: "fixed", note: " Typed it. " },
-      { id: "f2", outcome: "disputed", note: "The API returns any." },
+  test("each answer goes into its finding, in whichever review, and an unknown id is refused", () => {
+    const older = review([finding("f1"), finding("f2")]);
+    const untouched = review([finding("f4")]);
+    const next = answered(
+      [older, review([finding("f3")]), untouched],
+      [
+        { id: "f1", outcome: "fixed", note: " Typed it. " },
+        { id: "f3", outcome: "disputed", note: "The API returns any." },
+      ],
+    );
+    expect(next.map((entry) => entry.findings.map((item) => item.answer))).toEqual([
+      [{ outcome: "fixed", note: "Typed it." }, undefined],
+      [{ outcome: "disputed", note: "The API returns any." }],
+      [undefined],
     ]);
-    expect(next.findings.map((entry) => entry.answer)).toEqual([
-      { outcome: "fixed", note: "Typed it." },
-      { outcome: "disputed", note: "The API returns any." },
-      undefined,
-    ]);
+    expect(next[2]).toBe(untouched);
     expect(() => answered(next, [{ id: "f9", outcome: "fixed", note: "" }])).toThrow(
-      "f9 is not a finding of this review. Its findings are f1, f2, f3.",
+      "f9 is not a finding of a review sent to you. Their findings are f1, f2, f3, f4.",
     );
   });
 
@@ -85,8 +91,8 @@ describe("answering", () => {
         answer: { outcome: "disputed", note: "Intended." },
         decision: "fix",
       });
-      const next = answered(review([sentBack]), [{ id: "f1", outcome, note: "Again." }]);
-      expect(next.findings[0]?.decision).toBe(decision);
+      const [next] = answered([review([sentBack])], [{ id: "f1", outcome, note: "Again." }]);
+      expect(next?.findings[0]?.decision).toBe(decision);
     },
   );
 
