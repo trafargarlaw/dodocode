@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useRef,
   useState,
@@ -245,33 +246,78 @@ const FIRST_BLOCKS = 40;
 /** How many older blocks join at a time. */
 const MORE_BLOCKS = 40;
 
+const ITEM = '[data-slot="message-scroller-item"]';
+const CONTENT = '[data-slot="message-scroller-content"]';
+
 /**
  * The first block to show. A thread opens on its newest blocks, and older ones join as the reader
  * scrolls within a viewport's height of the top. They also join while the blocks shown fill less
- * than two viewports, so there is always room to scroll up. The browser keeps the view in place
- * as blocks join above it (scroll anchoring), also while a wheel scroll is still moving.
+ * than two viewports, so there is always room to scroll up: as blocks join, and whenever the
+ * blocks or the viewport change size without a scroll, as when a fold closes or the window grows.
+ *
+ * The browser keeps the view in place as blocks join above it (scroll anchoring), also while a
+ * wheel scroll is still moving. While a fold stops it doing that (`unanchored`, see
+ * useFoldsStayPut), the view is kept in place here, so the fold stays under the pointer.
  */
-function useOlderBlocks(count: number) {
+function useOlderBlocks(count: number, unanchored: boolean) {
   const [first, setFirst] = useState(() => Math.max(0, count - FIRST_BLOCKS));
   // A thread that lost blocks still shows its newest ones.
   const start = Math.min(first, Math.max(0, count - FIRST_BLOCKS));
   const viewport = useRef<HTMLDivElement>(null);
+  // The block that was first as older ones were asked for, where it was in the transcript, and
+  // the first block asked for.
+  const kept = useRef<{ item: Element; place: number; start: number } | undefined>(undefined);
 
-  useLayoutEffect(() => {
+  function more(element: HTMLDivElement) {
+    if (start === 0) return;
+    const next = Math.max(0, start - MORE_BLOCKS);
+    const item = element.querySelector(ITEM);
+    kept.current = item ? { item, place: placeOf(item, element), start: next } : undefined;
+    setFirst(next);
+  }
+
+  const fill = useEffectEvent(() => {
     const element = viewport.current;
-    if (element && start > 0 && element.scrollHeight < element.clientHeight * 2) {
-      setFirst(Math.max(0, start - MORE_BLOCKS));
+    if (element && element.scrollHeight < element.clientHeight * 2) more(element);
+  });
+
+  /** Runs once the blocks from `shown` on are in the page. */
+  const joined = useEffectEvent((shown: number) => {
+    const element = viewport.current;
+    const was = kept.current;
+    if (element && was?.start === shown) {
+      kept.current = undefined;
+      // The blocks that joined pushed it down by their height: scroll down as far.
+      if (unanchored) element.scrollTop += placeOf(was.item, element) - was.place;
     }
-  }, [start]);
+    fill();
+  });
+
+  useLayoutEffect(() => joined(start), [start]);
+
+  useEffect(() => {
+    const element = viewport.current;
+    const content = element?.querySelector(CONTENT);
+    if (!element || !content) return;
+    const observer = new ResizeObserver(() => fill());
+    observer.observe(element);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
 
   function onScroll(event: UIEvent<HTMLDivElement>) {
     const element = event.currentTarget;
-    if (start > 0 && element.scrollTop < element.clientHeight) {
-      setFirst(Math.max(0, start - MORE_BLOCKS));
-    }
+    if (element.scrollTop < element.clientHeight) more(element);
   }
 
   return { start, viewport, onScroll };
+}
+
+/** Where an element is in a scroller's content, wherever the scroller is scrolled to. */
+function placeOf(element: Element, scroller: Element): number {
+  return (
+    element.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+  );
 }
 
 /** The transcript's blocks. Those that show the same as last time stay as they were, to skip drawing. */
@@ -286,8 +332,8 @@ function useBlocks(items: Item[], running: boolean): Block[] {
 function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
   const running = thread.status === "running";
   const blocks = useBlocks(items, running);
-  const { viewport: olderViewport, ...older } = useOlderBlocks(blocks.length);
   const folds = useFoldsStayPut();
+  const { viewport: olderViewport, ...older } = useOlderBlocks(blocks.length, folds.unanchored);
   const last = items.at(-1);
   const streamingText = last?.type === "assistant" && last.streaming && last.text.length > 0;
   const showWorking = running && !streamingText;
