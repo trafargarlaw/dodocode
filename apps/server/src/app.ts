@@ -833,8 +833,8 @@ export class App implements ThreadContext {
   }
 
   /**
-   * Reads the branch again, after a turn, for a thread brought in from another app's checkout:
-   * its agent may have switched it.
+   * Reads the branch again for a thread brought in from another app's checkout, after a turn and
+   * as it opens: its agent may have switched it, or the person in the other app.
    */
   private async followCheckout(threadId: string): Promise<void> {
     const was = this.threads.get(threadId)?.origin?.checkout;
@@ -1383,6 +1383,7 @@ export class App implements ThreadContext {
     "thread.open": ({ threadId }, client) => {
       const runtime = this.runtime(threadId);
       client.open.add(threadId);
+      this.inBackground(() => this.followCheckout(threadId));
       return {
         thread: runtime.thread,
         items: runtime.items(),

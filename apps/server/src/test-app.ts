@@ -126,7 +126,7 @@ export interface TestApp {
   /** A folder of the test's own, which holds the project's. */
   dir: string;
   call<M extends Method>(method: M, params: Params<M>): Promise<Result<M>>;
-  /** The thread as the app has it now. */
+  /** The thread as the app has it now, read without opening it. */
   thread(threadId: string): Promise<Thread>;
   items(threadId: string): Promise<Item[]>;
   /** The text of the messages a thread was sent, the app's own included. */
@@ -181,7 +181,12 @@ export async function testApp(): Promise<TestApp> {
     project,
     dir,
     call,
-    thread: async (threadId) => (await call("thread.open", { threadId })).thread,
+    thread: async (threadId) => {
+      const { threads } = await call("app.snapshot", {});
+      const thread = threads.find((each) => each.id === threadId);
+      if (!thread) throw new Error(`No thread ${threadId}.`);
+      return thread;
+    },
     items,
     messages: async (threadId) =>
       (await items(threadId)).flatMap((item) => (item.type === "user" ? [item.text] : [])),
