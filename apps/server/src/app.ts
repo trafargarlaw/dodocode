@@ -1018,6 +1018,17 @@ export class App implements ThreadContext {
   }
 
   /** Adds a folder as a project, or gives back the project it already is. */
+  /** Takes a project away, and its threads with it. */
+  private removeProject(projectId: string): void {
+    for (const thread of this.threads.values()) {
+      if (thread.projectId === projectId && !thread.parentId) this.deleteThreadTree(thread.id);
+    }
+    this.unwatchGit(projectId);
+    this.projects.delete(projectId);
+    this.store.deleteProject(projectId);
+    this.emitProjects();
+  }
+
   private async addProject(full: string): Promise<Project> {
     let isFolder = false;
     try {
@@ -1179,6 +1190,7 @@ export class App implements ThreadContext {
     });
     const items = history.main.finish();
     if (items.length === 1) throw new Error("That conversation has nothing in it yet.");
+    const had = new Set(this.projects.keys());
     const project = place.project?.id
       ? this.project(place.project.id)
       : place.project && !place.folderGone
@@ -1269,6 +1281,10 @@ export class App implements ThreadContext {
       });
     } catch (error) {
       for (const path of written) rmSync(path, { force: true });
+      // The project added for it, unless a thread went in it meanwhile, brought in at once.
+      const added = project && !had.has(project.id) ? project.id : undefined;
+      const used = [...this.threads.values()].some((each) => each.projectId === added);
+      if (added && !used) this.removeProject(added);
       throw error;
     }
     this.emit({ type: "thread", thread });
@@ -1320,13 +1336,7 @@ export class App implements ThreadContext {
     "folder.list": ({ path }) => listFolders(path),
 
     "project.remove": ({ projectId }) => {
-      for (const thread of this.threads.values()) {
-        if (thread.projectId === projectId && !thread.parentId) this.deleteThreadTree(thread.id);
-      }
-      this.unwatchGit(projectId);
-      this.projects.delete(projectId);
-      this.store.deleteProject(projectId);
-      this.emitProjects();
+      this.removeProject(projectId);
       return null;
     },
 

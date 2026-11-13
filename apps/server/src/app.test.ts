@@ -209,6 +209,18 @@ describe("bringing in a conversation from another app", { timeout: 30_000 }, () 
     expect(t.agent.elsewhere.map((conversation) => conversation.id)).toEqual(["s1"]);
   });
 
+  test("one that can't be brought in takes away the project it added, not one it found", async () => {
+    const notes = join(t.dir, "notes");
+    mkdirSync(notes);
+    hadConversation("s1", notes);
+    hadConversation("s2", t.project.path);
+    t.agent.copyFails = true;
+    await expect(bringIn("s1", "copy")).rejects.toThrow("The copy could not be written.");
+    await expect(bringIn("s2", "copy")).rejects.toThrow("The copy could not be written.");
+    const { projects } = await t.call("app.snapshot", {});
+    expect(projects.map((project) => project.path)).toEqual([t.project.path]);
+  });
+
   test("the sessions dodocode made stay out of the list once their threads are deleted", async () => {
     const message = { text: "Add b.txt", images: [] };
     const task = await t.call("task.create", { projectId: t.project.id, message });
