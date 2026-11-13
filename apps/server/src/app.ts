@@ -759,6 +759,11 @@ export class App implements ThreadContext {
     const runtime = this.runtime(threadId);
     const thread = runtime.thread;
     const origin = this.rootOf(thread).origin;
+    if (origin?.folderGone) {
+      throw new Error(
+        "The folder this conversation worked in was gone when it was brought in, so it can't carry on here. To carry it on, delete this thread and bring the conversation in again.",
+      );
+    }
     if (origin && !existsSync(origin.cwd)) {
       throw new Error(
         `The folder this conversation worked in, ${origin.cwd}, is gone, so it can't carry on.`,
@@ -1176,6 +1181,7 @@ export class App implements ThreadContext {
         sessionId,
         cwd: session.cwd,
         mode,
+        ...(place.folderGone ? { folderGone: true } : {}),
         broughtAt: now,
       },
     };
@@ -1199,13 +1205,12 @@ export class App implements ThreadContext {
       return { thread: childThread, items: childItems };
     });
     // The copy comes last, once all else is ready: it is made in the other app, and nothing here
-    // takes it away again. One whose folder is gone can't carry on, so it needs no copy.
-    const resumeId =
-      mode === "same"
+    // takes it away again. One whose folder is gone never carries on, so it needs none.
+    const resumeId = place.folderGone
+      ? undefined
+      : mode === "same"
         ? sessionId
-        : place.folderGone
-          ? undefined
-          : await provider.sessions.copy(sessionId, session.cwd);
+        : await provider.sessions.copy(sessionId, session.cwd);
     // Kept apart from the thread, so a copy left by a save that failed isn't offered either.
     if (resumeId && mode === "copy") this.store.saveOwnSession(providerId, resumeId);
     this.store.transaction(() => {

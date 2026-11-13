@@ -405,12 +405,13 @@ function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
 
 /** Where a thread brought in from another app was started, and how it carries on. */
 function OriginChip({ origin }: { origin: ThreadOrigin }) {
-  const how =
-    origin.mode === "same"
-      ? `It carries on the same conversation, which ${origin.app} can carry on too.`
-      : `It carries on a copy. The original stays in ${origin.app} as it was.`;
+  const how = origin.folderGone
+    ? `Its folder, ${folderName(origin.cwd)}, was gone, so it has the history only.`
+    : origin.mode === "same"
+      ? `It carries on the same conversation, which ${origin.app} can carry on too. It works in ${folderName(origin.cwd)}.`
+      : `It carries on a copy. The original stays in ${origin.app} as it was. It works in ${folderName(origin.cwd)}.`;
   return (
-    <Tip label={`Brought in from ${origin.app}. ${how} It works in ${folderName(origin.cwd)}.`}>
+    <Tip label={`Brought in from ${origin.app}. ${how}`}>
       <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 text-[11.5px] text-muted-foreground">
         <HugeiconsIcon icon={BubbleChatDownload01Icon} strokeWidth={1.8} className="size-3.5" />
         {origin.mode === "copy" ? `Copy from ${origin.app}` : `From ${origin.app}`}

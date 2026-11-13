@@ -1,4 +1,4 @@
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -218,5 +218,18 @@ describe("bringing in a conversation from another app", { timeout: 30_000 }, () 
     await t.call("thread.delete", { threadId: task.id });
     await t.call("thread.delete", { threadId: copy.id });
     expect(await listed()).toEqual(["s1"]);
+  });
+
+  test("one whose folder was gone can't carry on, though the folder comes back", async () => {
+    const folder = join(t.dir, "gone");
+    hadConversation("s1", folder);
+    const thread = await bringIn("s1", "same");
+    expect(await t.messages(thread.id)).toEqual(["Asked in s1"]);
+
+    mkdirSync(folder);
+    const message = { text: "Go on", images: [] };
+    await expect(t.call("thread.send", { threadId: thread.id, message })).rejects.toThrow(
+      /^The folder this conversation worked in was gone when it was brought in/,
+    );
   });
 });
