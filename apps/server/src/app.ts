@@ -1057,7 +1057,7 @@ export class App implements ThreadContext {
         brought.set(`${thread.origin.provider}:${thread.origin.sessionId}`, thread.id);
       }
     }
-    const ours = this.store.resumedSessions();
+    const ours = this.store.ownSessions();
     const listing: SessionListing = { sessions: [], problems: [] };
     await Promise.all(
       [...this.providers.values()].map(async (provider) => {
@@ -1206,6 +1206,8 @@ export class App implements ThreadContext {
         : place.folderGone
           ? undefined
           : await provider.sessions.copy(sessionId, session.cwd);
+    // Kept apart from the thread, so a copy left by a save that failed isn't offered either.
+    if (resumeId && mode === "copy") this.store.saveOwnSession(providerId, resumeId);
     this.store.transaction(() => {
       this.store.saveThread(thread);
       if (resumeId) {

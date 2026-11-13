@@ -189,6 +189,12 @@ function bringIn(sessionId: string, mode: "same" | "copy"): Promise<Thread> {
   return t.call("sessions.import", { provider: "claude", sessionId, mode });
 }
 
+/** The conversations "Bring in" lists, and which of them are threads already. */
+async function listed(): Promise<string[]> {
+  const { sessions } = await t.call("sessions.list", {});
+  return sessions.map((session) => (session.threadId ? `${session.id}, brought in` : session.id));
+}
+
 describe("bringing in a conversation from another app", { timeout: 30_000 }, () => {
   test("one that can't be brought in leaves no copy in the other app", async () => {
     // A file where its folder was, so it can't be added as a project.
@@ -197,5 +203,20 @@ describe("bringing in a conversation from another app", { timeout: 30_000 }, () 
     hadConversation("s1", file);
     await expect(bringIn("s1", "copy")).rejects.toThrow(/is not a folder\.$/);
     expect(t.agent.elsewhere.map((conversation) => conversation.id)).toEqual(["s1"]);
+  });
+
+  test("the sessions dodocode made stay out of the list once their threads are deleted", async () => {
+    const message = { text: "Add b.txt", images: [] };
+    const task = await t.call("task.create", { projectId: t.project.id, message });
+    await t.call("thread.send", { threadId: task.id, message });
+    await idle(task.id);
+    hadConversation("s1", t.project.path);
+    const copy = await bringIn("s1", "copy");
+    // The task's own session and the copy are threads, so only the original lists.
+    expect(await listed()).toEqual(["s1, brought in"]);
+
+    await t.call("thread.delete", { threadId: task.id });
+    await t.call("thread.delete", { threadId: copy.id });
+    expect(await listed()).toEqual(["s1"]);
   });
 });

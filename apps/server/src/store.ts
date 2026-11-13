@@ -42,6 +42,10 @@ const SCHEMA = `
     data text not null,
     path text not null
   );
+  -- Agent sessions dodocode made whose threads are gone, as provider:id.
+  create table if not exists own_sessions (
+    session text primary key
+  );
   create table if not exists kv (
     key text primary key,
     value text not null
@@ -60,6 +64,16 @@ export interface ResumePoint {
 }
 
 export type ResumePoints = Partial<Record<ProviderId, ResumePoint>>;
+
+/** A thread's resume points as saved. A thread saved before costs were kept holds only ids. */
+function parseResume(text: string): ResumePoints {
+  const saved = JSON.parse(text) as Record<string, ResumePoint | string>;
+  const points: Record<string, ResumePoint> = {};
+  for (const [provider, point] of Object.entries(saved)) {
+    points[provider] = typeof point === "string" ? { id: point } : point;
+  }
+  return points as ResumePoints;
+}
 
 export class Store {
   private db: DatabaseSync;
@@ -151,6 +165,7 @@ export class Store {
   }
 
   private deleteThreadRows(id: string): void {
+    this.keepOwnSessions(id);
     this.sql("delete from items where thread_id = ?").run(id);
     this.sql("delete from threads where id = ?").run(id);
   }
@@ -160,26 +175,44 @@ export class Store {
       | { resume: string }
       | undefined;
     if (!row) return {};
-    const saved = JSON.parse(row.resume) as Record<string, ResumePoint | string>;
-    const points: Record<string, ResumePoint> = {};
-    // A thread saved before costs were kept holds only the session's id.
-    for (const [provider, point] of Object.entries(saved)) {
-      points[provider] = typeof point === "string" ? { id: point } : point;
-    }
-    return points as ResumePoints;
+    return parseResume(row.resume);
   }
 
-  /** Every agent session a thread picks up, as `provider:id`. */
-  resumedSessions(): Set<string> {
+  /**
+   * The agent sessions that are dodocode's, as `provider:id`: those its threads pick up, and
+   * those of threads deleted since.
+   */
+  ownSessions(): Set<string> {
+    const kept = this.sql("select session from own_sessions").all() as { session: string }[];
+    const sessions = new Set(kept.map((row) => row.session));
     const rows = this.sql("select resume from threads").all() as { resume: string }[];
-    const sessions = new Set<string>();
     for (const row of rows) {
-      const saved = JSON.parse(row.resume) as Record<string, ResumePoint | string>;
-      for (const [provider, point] of Object.entries(saved)) {
-        sessions.add(`${provider}:${typeof point === "string" ? point : point.id}`);
+      for (const [provider, point] of Object.entries(parseResume(row.resume))) {
+        sessions.add(`${provider}:${point.id}`);
       }
     }
     return sessions;
+  }
+
+  /** Keeps an agent session as dodocode's, though no thread picks it up. */
+  saveOwnSession(provider: ProviderId, id: string): void {
+    this.sql("insert or ignore into own_sessions (session) values (?)").run(`${provider}:${id}`);
+  }
+
+  /**
+   * Keeps the sessions a thread picks up, before it goes. Not the conversation it was brought in
+   * as, when it carries that same one on: that is the person's, from the other app.
+   */
+  private keepOwnSessions(threadId: string): void {
+    const row = this.sql("select data, resume from threads where id = ?").get(threadId) as
+      | { data: string; resume: string }
+      | undefined;
+    if (!row) return;
+    const { origin } = JSON.parse(row.data) as Thread;
+    for (const [provider, point] of Object.entries(parseResume(row.resume))) {
+      const theirs = origin?.provider === provider && origin.sessionId === point.id;
+      if (!theirs) this.saveOwnSession(provider as ProviderId, point.id);
+    }
   }
 
   saveResumePoints(threadId: string, points: ResumePoints): void {
