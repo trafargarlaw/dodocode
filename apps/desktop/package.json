@@ -12,6 +12,7 @@
     "start": "electron-vite preview --skipBuild",
     "package": "electron-builder --dir",
     "dist": "electron-builder",
+    "icons": "electron scripts/make-icons.mjs",
     "typecheck": "tsc -b",
     "test": "vitest run"
   },

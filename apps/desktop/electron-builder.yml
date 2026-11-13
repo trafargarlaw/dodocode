@@ -3,6 +3,8 @@ directories:
   output: release
 files:
   - out/**/*
+  # Images the main process opens by path, such as the tray icons.
+  - resources/**/*
   - package.json
 # The Claude Agent SDK runs its platform's `claude` binary, which can't run from inside the asar.
 asarUnpack:
@@ -15,3 +17,6 @@ win:
 linux:
   target: [AppImage]
   category: Development
+  # The app icons sit in build/, made from build/logo.svg by `pnpm icons`. macOS and Windows find
+  # icon.icns and icon.ico there by name; Linux takes this folder of sizes.
+  icon: icons

@@ -1,3 +1,5 @@
+<img src="apps/desktop/build/logo.svg" alt="" width="64" />
+
 # dodocode
 
 A desktop app for working with coding agents. Runs on macOS, Windows and Linux.
@@ -30,11 +32,22 @@ pnpm lint       # oxlint
 pnpm format     # oxfmt
 ```
 
+## Icons
+
+`apps/desktop/build/logo.svg` is the logo, and `apps/desktop/build/tray.svg` is its one-colour
+version for the tray. After changing either, make the icons again:
+
+```sh
+pnpm --filter @dodocode/desktop icons
+```
+
 ## Layout
 
 - `apps/desktop`: the Electron app
   - `src/main`: main process (windows, system access)
   - `src/preload`: the bridge the UI reaches as `window.dodocode`
   - `src/renderer`: the React UI
+  - `build`: the logo and the app icons made from it
+  - `resources`: images the main process opens at runtime, such as the tray icons
 - `packages/ui`: shared shadcn components, hooks and theme (`@dodocode/ui`)
 - `packages/typescript-config`: shared TypeScript settings

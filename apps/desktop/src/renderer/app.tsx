@@ -34,6 +34,7 @@ import { Spinner } from "@dodocode/ui/components/spinner";
 import { ThemePicker, setAppearance, stepThemePreset } from "@dodocode/ui/components/theme-picker";
 import { useTheme } from "@dodocode/ui/hooks/use-theme";
 import { cn } from "@dodocode/ui/lib/utils";
+import logo from "../../build/logo.svg";
 import { HeldKeys, Keys, Tip, WALLPAPER_KEYS } from "./keys";
 import { BoardView } from "./board";
 import { openPalette, Palette } from "./palette/palette";
@@ -203,13 +204,7 @@ function TitleBar({
   return (
     <header className="grid grid-cols-[1fr_auto_1fr] items-center [-webkit-app-region:drag]">
       <div className={cn("flex items-center gap-2.5", isMac ? "pl-20" : "pl-3.5")}>
-        <span
-          aria-hidden
-          className="grid size-5 place-items-center rounded-md bg-primary text-xs font-extrabold text-primary-foreground"
-        >
-          d
-        </span>
-        <span className="font-semibold tracking-tight">dodocode</span>
+        <img src={logo} alt="dodocode" draggable={false} className="h-5 w-auto" />
         <div className="ml-1 flex items-center gap-0.5">
           <Tip label={sidebarLabel} hotkey={hotkeys["sidebar.toggle"]}>
             <TitleButton

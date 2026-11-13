@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
+import windowsIcon from "../../build/icon.ico?asset";
+import linuxIcon from "../../build/icons/256x256.png?asset";
 import {
   PICK_FOLDER_CHANNEL,
   SERVER_INFO_CHANNEL,
@@ -24,6 +26,11 @@ const server = new ServerProcess();
 const rendererDevUrl = process.env.ELECTRON_RENDERER_URL;
 // The page draws the title bar's background, so the window buttons sit on a clear overlay.
 const CLEAR = "#00000000";
+
+// macOS shows the icon in the app bundle. Windows and Linux show the window's own, which also
+// stands in for Electron's icon while developing.
+const windowIcon =
+  process.platform === "win32" ? windowsIcon : process.platform === "linux" ? linuxIcon : null;
 
 function isWindowTheme(value: unknown): value is WindowTheme {
   if (typeof value !== "object" || value === null) return false;
@@ -52,6 +59,7 @@ function createMainWindow(): void {
     minHeight: 500,
     show: false,
     title: "dodocode",
+    ...(windowIcon ? { icon: windowIcon } : {}),
     // The page draws the title bar. macOS keeps its traffic lights, centred in it; Windows and
     // Linux keep their window buttons, drawn over it.
     titleBarStyle: "hidden",
