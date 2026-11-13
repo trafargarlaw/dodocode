@@ -73,6 +73,7 @@ import {
   reported,
   reviewPrompt,
   type ReviewBrief,
+  undecided,
 } from "./review";
 import { carriedModel, projectHolding } from "./sessions";
 import { Store } from "./store";
@@ -1523,7 +1524,15 @@ export class App implements ThreadContext {
       runtime.replace({ ...runtime.thread, review: next });
       const finding = next.findings.find((entry) => entry.id === findingId);
       if (decision === "fix" && finding) {
-        await this.sendToTask(parentId, { text: fixAnywayMessage(finding), images: [] });
+        try {
+          await this.sendToTask(parentId, { text: fixAnywayMessage(finding), images: [] });
+        } catch (error) {
+          // Unsent, it isn't decided: the person can ask again.
+          const current = runtime.thread.review;
+          if (current)
+            runtime.replace({ ...runtime.thread, review: undecided(current, findingId) });
+          throw error;
+        }
       }
       return null;
     },

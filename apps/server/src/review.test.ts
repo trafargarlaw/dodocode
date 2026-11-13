@@ -96,7 +96,7 @@ describe("answering", () => {
     },
   );
 
-  test("only a finding the agent disputed takes the person's call", () => {
+  test("only a finding the agent disputed takes the person's call, and only once", () => {
     const disputed = finding("f1", { answer: { outcome: "disputed", note: "Intended." } });
     const fixed = finding("f2", { answer: { outcome: "fixed", note: "Done." } });
     const next = decided(review([disputed, fixed]), "f1", "agree");
@@ -104,6 +104,7 @@ describe("answering", () => {
     expect(() => decided(next, "f2", "fix")).toThrow(
       "Only a finding the agent disputed waits for your call.",
     );
+    expect(() => decided(next, "f1", "fix")).toThrow("You decided on f1 already.");
   });
 });
 
