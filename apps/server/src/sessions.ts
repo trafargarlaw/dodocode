@@ -12,6 +12,11 @@ export function holds(folder: string, path: string, platform = process.platform)
   return inside === "" || (!inside.startsWith("..") && !isAbsolute(inside));
 }
 
+/** Whether two paths name the same folder. */
+export function samePath(a: string, b: string, platform = process.platform): boolean {
+  return holds(a, b, platform) && holds(b, a, platform);
+}
+
 /** The project a folder is in: the one nearest it, when one project holds another. */
 export function projectHolding(
   projects: Iterable<Project>,
