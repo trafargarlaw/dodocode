@@ -97,9 +97,10 @@ fields and columns
   our code        the app's own functions (outside node_modules) by self time, with location
   self time       the thread's functions by self time
   slow            slow actions: n: times done; slow: times over the budget
-  untimed         slow: clicks and key presses the app marked that Chrome did not time, because
-                  the window drew no frames then (covered or minimised). Left out of
-                  interactions and slow; `tasks --window` shows their work.
+  untimed         slow: clicks and key presses the app marked that Chrome did not time: the
+                  window drew no frames then (covered or minimised), or the press became no
+                  click (a drag started, or it was cancelled). Left out of interactions and
+                  slow; `tasks --window` shows their work.
   verdict         diff: faster, slower, less, more: a change at p<0.05; unclear: p>=0.05;
                   too few: too few values a side to reach p<0.05; only before, only after
   maps stale      bundles rebuilt since the run was recorded: their functions show bundle
