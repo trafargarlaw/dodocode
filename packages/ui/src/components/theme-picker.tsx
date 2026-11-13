@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -25,7 +26,7 @@ import { Kbd } from "@dodocode/ui/components/kbd";
 import { ToggleGroup, ToggleGroupItem } from "@dodocode/ui/components/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@dodocode/ui/components/tooltip";
 import { setTheme, useTheme } from "@dodocode/ui/hooks/use-theme";
-import { oklch, toCss } from "@dodocode/ui/lib/color";
+import { mix, oklch, toCss, type Rgb } from "@dodocode/ui/lib/color";
 import { addColor, moveColor, removeColor } from "@dodocode/ui/lib/linked-colors";
 import {
   MAX_COLORS,
@@ -170,9 +171,10 @@ export function ThemePicker({
                   aria-label={choice.name}
                   aria-pressed={choice === preset}
                   onClick={() => applyPreset(choice)}
-                  style={{ background: swatch(choice, theme.scheme) }}
-                  className="size-7 rounded-lg shadow-[inset_0_0_0_1px_rgb(0_0_0/0.08)] outline-2 outline-offset-2 outline-transparent transition-[outline-color] focus-visible:outline-ring aria-pressed:outline-foreground"
-                />
+                  className="size-7 rounded-lg outline-2 outline-offset-2 outline-transparent transition-[outline-color] focus-visible:outline-ring aria-pressed:outline-foreground"
+                >
+                  <Swatch preset={choice} scheme={theme.scheme} open={open} />
+                </button>
               </Tip>
             ))}
           </div>
@@ -291,10 +293,13 @@ function ColorField({
   onChange: (colors: readonly WallpaperColor[]) => void;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const dots = useRef<HTMLCanvasElement>(null);
   // The colour being dragged, and every colour as it was when the drag started.
   const drag = useRef<Drag | null>(null);
-  // The field drawn last. A hidden picker draws none, and draws on opening only what changed.
+  // The field and dots drawn last. A hidden picker draws none, and draws on opening only what
+  // changed.
   const drawn = useRef<string | undefined>(undefined);
+  const dotsDrawn = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     const field = `${scheme} ${settings.intensity}`;
@@ -304,6 +309,16 @@ function ColorField({
     context.putImageData(fieldImage(scheme, settings.intensity), 0, 0);
     drawn.current = field;
   }, [scheme, settings.intensity, open]);
+
+  useEffect(() => {
+    const element = dots.current;
+    // The field's size is fixed, so the dots change only with the scheme and the pixel density.
+    // Checked before measuring, which would make the browser lay out the page there and then.
+    const grid = `${scheme} ${devicePixelRatio}`;
+    if (!open || dotsDrawn.current === grid || !element?.clientWidth) return;
+    drawDots(element);
+    dotsDrawn.current = grid;
+  }, [scheme, open]);
 
   const moveTo = (event: PointerEvent<HTMLDivElement>, { index, start }: Drag) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -360,13 +375,10 @@ function ColorField({
         height={FIELD_HEIGHT}
         className="absolute inset-0 size-full"
       />
-      <div
+      <canvas
+        ref={dots}
         aria-hidden
-        className="pointer-events-none absolute inset-0 text-foreground opacity-[0.08]"
-        style={{
-          backgroundImage: "radial-gradient(currentColor 1px, transparent 1.3px)",
-          backgroundSize: "7px 7px",
-        }}
+        className="pointer-events-none absolute inset-0 size-full text-foreground"
       />
       {settings.colors.map((color, i) => {
         const turn = ((color.hue - 90) * Math.PI) / 180;
@@ -437,6 +449,49 @@ function fieldImage(scheme: ColorScheme, intensity: number): ImageData {
   const oldest = fields.keys().next();
   if (fields.size > KEPT_FIELDS && !oldest.done) fields.delete(oldest.value);
   return image;
+}
+
+// The swatches and the field's dots are drawn on the CPU into canvases, which the page shows as
+// pictures. Drawn by CSS, as gradients and a pattern, each needs the GPU to prepare a shader the
+// first time it shows, and on a fresh install the picker's first opening waited about 100ms for
+// those.
+
+// The field's dots, as `radial-gradient(currentColor 1px, transparent 1.3px)` tiled every 7px at
+// 8% opacity drew them: one in the middle of each square, solid out to 1px, gone by 1.3px.
+const DOT_GAP = 7;
+const DOT_SOLID = 1;
+const DOT_EDGE = 1.3;
+const DOT_ALPHA = 0.08;
+
+/** The grid of faint dots over the field, in the canvas's text colour. */
+function drawDots(canvas: HTMLCanvasElement): void {
+  const scale = devicePixelRatio;
+  const width = Math.round(canvas.clientWidth * scale);
+  const height = Math.round(canvas.clientHeight * scale);
+  canvas.width = width;
+  canvas.height = height;
+  // Read back often, a canvas stays on the CPU, where drawing it needs no shader.
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return;
+  // Each pixel's opacity, from how far its middle is from the nearest dot's, as the gradient
+  // works it out. A path's edges would come out softer than the CSS dots were.
+  const image = context.createImageData(width, height);
+  for (let y = 0; y < height; y++) {
+    const dy = (((y + 0.5) / scale) % DOT_GAP) - DOT_GAP / 2;
+    if (Math.abs(dy) >= DOT_EDGE) continue;
+    for (let x = 0; x < width; x++) {
+      const dx = (((x + 0.5) / scale) % DOT_GAP) - DOT_GAP / 2;
+      if (Math.abs(dx) >= DOT_EDGE) continue;
+      const solid = (DOT_EDGE - Math.sqrt(dx * dx + dy * dy)) / (DOT_EDGE - DOT_SOLID);
+      const opacity = Math.max(0, Math.min(1, solid)) * DOT_ALPHA;
+      image.data[(y * width + x) * 4 + 3] = Math.round(opacity * 255);
+    }
+  }
+  context.putImageData(image, 0, 0);
+  // Then the colour, kept only where the dots are.
+  context.globalCompositeOperation = "source-in";
+  context.fillStyle = getComputedStyle(canvas).color;
+  context.fillRect(0, 0, width, height);
 }
 
 /** A point in the field, from 0 to 1 on each axis, as a colour: hue around, strength outwards. */
@@ -622,15 +677,79 @@ function stepValue(
 }
 
 /** A preset's colours, a little lighter than the dark wallpaper so presets are easy to tell apart. */
-function swatch(preset: Preset, scheme: ColorScheme): string {
-  const colors = preset.colors.map((color) =>
-    toCss(
-      oklch(scheme === "dark" ? 0.5 : 0.84, color.strength * preset.intensity * 0.13, color.hue),
-    ),
+function swatchColors(preset: Preset, scheme: ColorScheme): Rgb[] {
+  return preset.colors.map((color) =>
+    oklch(scheme === "dark" ? 0.5 : 0.84, color.strength * preset.intensity * 0.13, color.hue),
   );
-  return colors.length > 1
-    ? `linear-gradient(${preset.angle}deg in oklab, ${colors.join(", ")})`
-    : (colors[0] ?? "");
+}
+
+// The canvas mixes a gradient's colours in sRGB: stops this close, each mixed in OKLab, draw it
+// the way CSS's `in oklab` does.
+const STOPS_BETWEEN_COLORS = 8;
+
+/** A preset's swatch, drawn when the picker is open and the swatch is not drawn yet. */
+function Swatch({ preset, scheme, open }: { preset: Preset; scheme: ColorScheme; open: boolean }) {
+  const canvas = useRef<HTMLCanvasElement>(null);
+  const drawn = useRef<string | undefined>(undefined);
+  // Before the frame is painted, so a page of presets never shows empty for a frame.
+  useLayoutEffect(() => {
+    const element = canvas.current;
+    // Checked before measuring, which would make the browser lay out the page there and then.
+    const swatch = `${preset.name} ${scheme} ${devicePixelRatio}`;
+    if (!open || drawn.current === swatch || !element?.clientWidth) return;
+    drawSwatch(element, swatchColors(preset, scheme), preset.angle);
+    drawn.current = swatch;
+  }, [preset, scheme, open]);
+  return <canvas ref={canvas} aria-hidden className="block size-full rounded-[inherit]" />;
+}
+
+/** Colours as `linear-gradient(<angle>deg in oklab, ...)` draws them, with a faint edge. */
+function drawSwatch(canvas: HTMLCanvasElement, colors: readonly Rgb[], angle: number): void {
+  const scale = devicePixelRatio;
+  const size = Math.round(canvas.clientWidth * scale);
+  canvas.width = size;
+  canvas.height = size;
+  // Read back often, a canvas stays on the CPU, where drawing it needs no shader.
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  const [first] = colors;
+  if (!context || !first) return;
+  if (colors.length === 1) {
+    context.fillStyle = toCss(first);
+  } else {
+    // CSS's gradient line runs through the middle at the angle, and reaches the far corners.
+    const turn = (angle * Math.PI) / 180;
+    const half = (size * (Math.abs(Math.sin(turn)) + Math.abs(Math.cos(turn)))) / 2;
+    const [dx, dy] = [Math.sin(turn) * half, -Math.cos(turn) * half];
+    const middle = size / 2;
+    const gradient = context.createLinearGradient(
+      middle - dx,
+      middle - dy,
+      middle + dx,
+      middle + dy,
+    );
+    const stops = STOPS_BETWEEN_COLORS * (colors.length - 1);
+    for (let i = 0; i <= stops; i++) {
+      const at = (i / stops) * (colors.length - 1);
+      const from = Math.min(Math.floor(at), colors.length - 2);
+      const color = mix(colors[from] ?? first, colors[from + 1] ?? first, at - from);
+      gradient.addColorStop(i / stops, toCss(color));
+    }
+    context.fillStyle = gradient;
+  }
+  context.fillRect(0, 0, size, size);
+  // The edge, a one-pixel line just inside the swatch's rounded outline.
+  const radius = Number.parseFloat(getComputedStyle(canvas).borderTopLeftRadius) * scale;
+  context.strokeStyle = "rgb(0 0 0 / 0.08)";
+  context.lineWidth = scale;
+  context.beginPath();
+  context.roundRect(
+    scale / 2,
+    scale / 2,
+    size - scale,
+    size - scale,
+    Math.max(0, radius - scale / 2),
+  );
+  context.stroke();
 }
 
 /** Changes the theme with a short cross-fade, unless the person asked for less motion. */

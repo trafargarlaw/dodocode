@@ -1,4 +1,4 @@
-// The colour maths themes need: OKLCH to sRGB, blending, and WCAG contrast.
+// The colour maths themes need: OKLCH to sRGB, mixing, blending, and WCAG contrast.
 
 /** An sRGB colour as 8-bit channels, the way the screen shows it. */
 export type Rgb = readonly [red: number, green: number, blue: number];
@@ -16,10 +16,27 @@ function oklabToLinearSrgb(l: number, a: number, b: number): [number, number, nu
   ];
 }
 
+function toOklab([red, green, blue]: Rgb): [number, number, number] {
+  const [r, g, b] = [red, green, blue].map((v) => decode(v / 255)) as [number, number, number];
+  const long = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+  const medium = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+  const short = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [
+    0.2104542553 * long + 0.793617785 * medium - 0.0040720468 * short,
+    1.9779984951 * long - 2.428592205 * medium + 0.4505937099 * short,
+    0.0259040371 * long + 0.7827717662 * medium - 0.808675766 * short,
+  ];
+}
+
 const fitsSrgb = (linear: readonly number[]) => linear.every((v) => v >= -1e-4 && v <= 1 + 1e-4);
 const encode = (v: number) => (v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055);
 const decode = (v: number) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+
+function toRgb(linear: readonly number[]): Rgb {
+  const [red, green, blue] = linear.map((v) => Math.round(encode(clamp(v, 0, 1)) * 255));
+  return [red ?? 0, green ?? 0, blue ?? 0];
+}
 
 /**
  * An OKLCH colour in sRGB. When the colour is outside sRGB, its chroma is lowered until it fits,
@@ -40,8 +57,15 @@ export function oklch(lightness: number, chroma: number, hue: number): Rgb {
     }
     linear = toLinear(inside);
   }
-  const [red, green, blue] = linear.map((v) => Math.round(encode(clamp(v, 0, 1)) * 255));
-  return [red ?? 0, green ?? 0, blue ?? 0];
+  return toRgb(linear);
+}
+
+/** The colour `amount` of the way from `from` to `to`, mixed in OKLab as CSS's `in oklab` does. */
+export function mix(from: Rgb, to: Rgb, amount: number): Rgb {
+  const start = toOklab(from);
+  const end = toOklab(to);
+  const [l, a, b] = start.map((v, i) => v + ((end[i] ?? v) - v) * amount);
+  return toRgb(oklabToLinearSrgb(l ?? 0, a ?? 0, b ?? 0));
 }
 
 /** WCAG relative luminance, from 0 (black) to 1 (white). */

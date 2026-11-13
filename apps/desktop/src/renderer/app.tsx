@@ -230,7 +230,9 @@ function TitleBar({
               side="bottom"
               align="start"
               sideOffset={8}
-              className="w-75 rounded-2xl p-3"
+              // Opens and closes at once, like the menus: on a fresh install its zoom made the
+              // first opening wait about 45ms more for the GPU to prepare shaders.
+              className="w-75 rounded-2xl p-3 animate-none!"
             >
               {/* While the theme is open, its keys are the only ones that run. */}
               <HotkeysProvider scope="theme" exclusive enabled={themeOpen}>
