@@ -237,6 +237,17 @@ describe("bringing in a conversation from another app", { timeout: 30_000 }, () 
     );
   });
 
+  test("one whose folder was gone goes in the project that folder was, not one around it", async () => {
+    const old = join(t.dir, "old");
+    mkdirSync(old);
+    const project = await t.call("project.add", { path: old });
+    rmSync(old, { recursive: true });
+    hadConversation("s1", old);
+    hadConversation("s2", join(t.project.path, "gone"));
+    expect((await bringIn("s1", "same")).projectId).toBe(project.id);
+    expect((await bringIn("s2", "same")).projectId).toBeUndefined();
+  });
+
   test("one from another app's worktree has that checkout, and the branch it is on", async () => {
     const worktree = join(t.dir, "elsewhere");
     t.git("worktree", "add", "-q", "-b", "feature", worktree);

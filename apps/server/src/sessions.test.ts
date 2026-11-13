@@ -52,8 +52,16 @@ describe("where a conversation goes", () => {
       goes: "none",
     },
     {
-      case: "a folder in the home folder, outside any repository",
-      projects: [],
+      case: "the home folder, a project, outside any repository",
+      projects: [home],
+      cwd: "/home/me",
+      checkout: undefined,
+      goes: "home",
+    },
+    // A project takes what was started in its own folder, not in a folder inside it.
+    {
+      case: "a folder in the home folder, a project, outside any repository",
+      projects: [home],
       cwd: "/home/me/notes",
       checkout: undefined,
       goes: "add /home/me/notes",
@@ -87,15 +95,8 @@ describe("where a conversation goes", () => {
       goes: "web",
     },
     {
-      case: "a folder in a repository no project holds",
+      case: "a folder in a repository in the home folder, a project",
       projects: [home],
-      cwd: "/home/me/code/new/src",
-      checkout: { root: "/home/me/code/new", main: "/home/me/code/new" },
-      goes: "home",
-    },
-    {
-      case: "a folder in a repository, with no project",
-      projects: [],
       cwd: "/home/me/code/new/src",
       checkout: { root: "/home/me/code/new", main: "/home/me/code/new" },
       goes: "add /home/me/code/new",
