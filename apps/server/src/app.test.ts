@@ -171,6 +171,10 @@ describe("reviews", { timeout: 30_000 }, () => {
   });
 });
 
+/** A 1×1 PNG. */
+const PNG =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
 /** Gives the agent a conversation `id` it had in Claude Code, in `cwd`. */
 function hadConversation(id: string, cwd: string, extra: Partial<FakeConversation> = {}): void {
   t.agent.elsewhere.push({
@@ -231,5 +235,19 @@ describe("bringing in a conversation from another app", { timeout: 30_000 }, () 
     await expect(t.call("thread.send", { threadId: thread.id, message })).rejects.toThrow(
       /^The folder this conversation worked in was gone when it was brought in/,
     );
+  });
+
+  test("its images are kept once it is brought in, and not when that fails", async () => {
+    hadConversation("s1", t.project.path, { image: PNG });
+    t.agent.copyFails = true;
+    await expect(bringIn("s1", "copy")).rejects.toThrow("The copy could not be written.");
+    expect(t.attachments()).toEqual([]);
+
+    t.agent.copyFails = false;
+    const thread = await bringIn("s1", "copy");
+    const sent = (await t.items(thread.id)).flatMap((item) =>
+      item.type === "user" ? item.images : [],
+    );
+    expect(t.attachments()).toEqual([`${sent[0]!.id}.png`]);
   });
 });
