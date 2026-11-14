@@ -1,13 +1,12 @@
 import { useRef, useState, type ComponentProps, type ReactNode, type RefObject } from "react";
 import { useAppHotkeys } from "@tanstack/react-hotkeys";
 import { useLiveQuery } from "@tanstack/react-db";
-import type { Project, Thread } from "@dodocode/protocol";
+import type { Project, Thread, ThreadStatus } from "@dodocode/protocol";
 import {
   Add01Icon,
   Archive02Icon,
   ArchiveArrowUpIcon,
   ArrowDown01Icon,
-  BubbleChatDownload01Icon,
   Cancel01Icon,
   Delete02Icon,
   FilterIcon,
@@ -67,6 +66,7 @@ import {
   GROUP_LABEL,
   needsYou,
   sidebarGroups,
+  topThreadId,
   type GroupId,
   type ListFilter,
   type SidebarGroup,
@@ -110,9 +110,8 @@ export function Sidebar({ onNewThread }: { onNewThread: () => void }) {
   });
   const tasks = groups.filter((group) => group.id !== "chats");
   const chats = groups.find((group) => group.id === "chats");
-  const names = new Map(projectList.map((project) => [project.id, project.name]));
-  // A row names its project only while the list mixes them.
-  const mixed = !filter.projectId && new Set(threadList.map((thread) => thread.projectId)).size > 1;
+  // A subagent or a review has no row: the row of the thread it belongs to stands for it.
+  const openTopId = openId ? topThreadId(threadList, openId) : undefined;
   const waiting = threadList.filter(
     (thread) =>
       needsYou(thread) &&
@@ -133,9 +132,8 @@ export function Sidebar({ onNewThread }: { onNewThread: () => void }) {
     expanded: expanded.has(group.id),
     onExpand: (on: boolean) => expand(group.id, on),
     openId,
+    openTopId,
     now,
-    projectName: (thread: Thread) =>
-      mixed && thread.projectId ? names.get(thread.projectId) : undefined,
   });
 
   return (
@@ -468,8 +466,9 @@ interface GroupRowsProps {
   expanded: boolean;
   onExpand: (on: boolean) => void;
   openId: string | undefined;
+  /** The top thread the open thread belongs to: itself, or the one whose subagent is open. */
+  openTopId: string | undefined;
   now: number;
-  projectName: (thread: Thread) => string | undefined;
 }
 
 /** A stage of the tasks, which folds shut from its heading. */
@@ -509,21 +508,20 @@ function GroupRows({
   expanded,
   onExpand,
   openId,
+  openTopId,
   now,
-  projectName,
 }: GroupRowsProps) {
   // A folded group still shows the open thread, so the list never loses where you are.
-  const rows = collapsed ? group.rows.filter((row) => row.thread.id === openId) : group.rows;
+  const rows = collapsed ? group.rows.filter((row) => row.thread.id === openTopId) : group.rows;
   return (
     <>
-      {rows.map(({ thread, nested }) => (
+      {rows.map(({ thread, status }) => (
         <ThreadRow
           key={thread.id}
           thread={thread}
-          nested={nested}
-          open={thread.id === openId}
+          status={status}
+          open={thread.id === openId ? "page" : thread.id === openTopId ? "within" : undefined}
           now={now}
-          project={nested ? undefined : projectName(thread)}
         />
       ))}
       {!collapsed && group.hidden > 0 && (
@@ -548,29 +546,31 @@ function MoreButton({ onClick, children }: { onClick: () => void; children: Reac
   );
 }
 
+/**
+ * One thread, on one line: what needs the person or runs, the title, and how long since anything
+ * happened. The rest of what there is to know about it is in its details, beside it once open.
+ */
 function ThreadRow({
   thread,
-  nested,
+  status,
   open,
   now,
-  project,
 }: {
   thread: Thread;
-  nested: boolean;
-  open: boolean;
+  /** What its mark shows: its own status, or a subagent's. */
+  status: ThreadStatus;
+  /** `page`: the thread is open. `within`: one of its subagents or reviews is. */
+  open: "page" | "within" | undefined;
   now: number;
-  /** The project's name, when the list mixes projects. */
-  project: string | undefined;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const settleable = !nested && thread.task !== undefined && thread.task.status !== "done";
+  const settleable = thread.task !== undefined && thread.task.status !== "done";
 
   if (renaming) {
     return (
       <RenameField
         title={thread.title}
-        nested={nested}
         onDone={(title) => {
           setRenaming(false);
           if (title && title !== thread.title) renameThread(thread.id, title);
@@ -583,12 +583,11 @@ function ThreadRow({
     <div className="group/thread relative">
       <button
         type="button"
-        aria-current={open ? "page" : undefined}
+        aria-current={open === "page" ? "page" : open === "within" ? "true" : undefined}
         onClick={() => openThread(thread.id)}
         onDoubleClick={() => setRenaming(true)}
         className={cn(
-          "flex h-7.5 w-full items-center gap-2 rounded-[7px] pr-2 text-left whitespace-nowrap transition-colors outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring",
-          nested ? "pl-11" : "pl-7.5",
+          "flex h-7.5 w-full items-center gap-2 rounded-[7px] pr-2 pl-7.5 text-left whitespace-nowrap transition-colors outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring",
           open && "bg-sidebar-selected hover:bg-sidebar-selected",
         )}
       >
@@ -596,9 +595,10 @@ function ThreadRow({
         <span className="-ml-5.5 grid size-3.5 shrink-0 place-items-center">
           <Attention
             thread={thread}
+            status={status}
             className="text-sidebar-muted-foreground"
             idle={
-              thread.pinned && !nested ? (
+              thread.pinned ? (
                 <HugeiconsIcon
                   icon={PinIcon}
                   strokeWidth={1.8}
@@ -609,28 +609,10 @@ function ThreadRow({
             }
           />
         </span>
-        <span className={cn("min-w-0 flex-1 truncate", nested && "text-sidebar-muted-foreground")}>
+        <span className="min-w-0 flex-1 truncate">
           {thread.title}
           {thread.archived && <span className="text-sidebar-muted-foreground"> · Archived</span>}
         </span>
-        {thread.origin && (
-          <span
-            title={`Brought in from ${thread.origin.app}`}
-            className="shrink-0 text-sidebar-muted-foreground group-focus-within/thread:invisible group-hover/thread:invisible group-has-data-popup-open/thread:invisible"
-          >
-            <HugeiconsIcon
-              icon={BubbleChatDownload01Icon}
-              strokeWidth={1.8}
-              aria-label={`Brought in from ${thread.origin.app}`}
-              className="size-3"
-            />
-          </span>
-        )}
-        {project && (
-          <span className="max-w-20 shrink truncate text-[11.5px] text-sidebar-muted-foreground group-focus-within/thread:invisible group-hover/thread:invisible group-has-data-popup-open/thread:invisible">
-            {project}
-          </span>
-        )}
         <span className="shrink-0 text-[11.5px] text-sidebar-muted-foreground tabular-nums group-focus-within/thread:invisible group-hover/thread:invisible group-has-data-popup-open/thread:invisible">
           {ago(thread.activityAt, now)}
         </span>
@@ -651,7 +633,7 @@ function ThreadRow({
             <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" side="right" className="min-w-44">
-            {!nested && (thread.task || thread.projectId) && (
+            {(thread.task || thread.projectId) && (
               <>
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
@@ -665,25 +647,21 @@ function ThreadRow({
                 <DropdownMenuSeparator />
               </>
             )}
-            {!nested && (
-              <DropdownMenuItem onClick={() => setPinned(thread.id, !thread.pinned)}>
-                <HugeiconsIcon icon={thread.pinned ? PinOffIcon : PinIcon} strokeWidth={1.8} />
-                {thread.pinned ? "Unpin" : "Pin"}
-              </DropdownMenuItem>
-            )}
+            <DropdownMenuItem onClick={() => setPinned(thread.id, !thread.pinned)}>
+              <HugeiconsIcon icon={thread.pinned ? PinOffIcon : PinIcon} strokeWidth={1.8} />
+              {thread.pinned ? "Unpin" : "Pin"}
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => setRenaming(true)}>
               <HugeiconsIcon icon={PencilEdit01Icon} strokeWidth={1.8} />
               Rename
             </DropdownMenuItem>
-            {!nested && (
-              <DropdownMenuItem onClick={() => setArchived(thread.id, !thread.archived)}>
-                <HugeiconsIcon
-                  icon={thread.archived ? ArchiveArrowUpIcon : Archive02Icon}
-                  strokeWidth={1.8}
-                />
-                {thread.archived ? "Unarchive" : "Archive"}
-              </DropdownMenuItem>
-            )}
+            <DropdownMenuItem onClick={() => setArchived(thread.id, !thread.archived)}>
+              <HugeiconsIcon
+                icon={thread.archived ? ArchiveArrowUpIcon : Archive02Icon}
+                strokeWidth={1.8}
+              />
+              {thread.archived ? "Unarchive" : "Archive"}
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onClick={() => setDeleting(true)}>
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.8} />
@@ -698,6 +676,7 @@ function ThreadRow({
         title={`Delete ${thread.title}?`}
         action="Delete thread"
         onConfirm={() => {
+          // Its subagents go with it, so leave one of theirs that is open too.
           if (open) openDraft(thread.projectId);
           deleteThread(thread.id);
         }}
@@ -717,11 +696,9 @@ function ThreadRow({
 
 function RenameField({
   title,
-  nested,
   onDone,
 }: {
   title: string;
-  nested: boolean;
   onDone: (title: string | undefined) => void;
 }) {
   return (
@@ -736,10 +713,7 @@ function RenameField({
         if (event.key === "Enter") onDone(event.currentTarget.value.trim());
         if (event.key === "Escape") onDone(undefined);
       }}
-      className={cn(
-        "h-7.5 w-full rounded-[7px] bg-background pr-2 text-foreground ring-2 ring-sidebar-ring outline-none",
-        nested ? "pl-11" : "pl-7.5",
-      )}
+      className="h-7.5 w-full rounded-[7px] bg-background pr-2 pl-7.5 text-foreground ring-2 ring-sidebar-ring outline-none"
     />
   );
 }

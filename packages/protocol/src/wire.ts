@@ -3,6 +3,7 @@
 
 import type {
   BackgroundJob,
+  ChangeCount,
   FileChange,
   ImageRef,
   Item,
@@ -177,6 +178,8 @@ export interface Methods {
   "thread.openInEditor": { params: { threadId: string }; result: null };
   /** What the thread's work changed: against its base branch in a worktree, else uncommitted. */
   "thread.changes": { params: { threadId: string }; result: WorkChanges };
+  /** How many files and lines `thread.changes` holds, without the diff: quick to read. */
+  "thread.changeCount": { params: { threadId: string }; result: ChangeCount };
   /**
    * Commits what the agent left in the thread's worktree, merges its branch into the branch it
    * came from, then removes the worktree and the branch. A task is then done.

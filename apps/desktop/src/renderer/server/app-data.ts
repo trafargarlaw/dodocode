@@ -5,6 +5,7 @@ import { createCollection } from "@tanstack/react-db";
 import {
   taskPrompt,
   unstarted,
+  type ChangeCount,
   type OutgoingMessage,
   type Project,
   type ProviderInfo,
@@ -233,6 +234,19 @@ export function setWorkspace(threadId: string, workspace: WorkspaceMode): void {
 /** What a thread's work changed, file by file. */
 export function threadChanges(threadId: string): Promise<WorkChanges> {
   return server.call("thread.changes", { threadId });
+}
+
+/** How many files and lines a thread's work changed, without the diff. */
+export function threadChangeCount(threadId: string): Promise<ChangeCount> {
+  return server.call("thread.changeCount", { threadId });
+}
+
+/** Shows a folder in the system's file manager. */
+export function openFolder(path: string): void {
+  window.dodocode.openFolder(path).then(
+    (problem) => problem && reportError("Could not open the folder", new Error(problem)),
+    (error: unknown) => reportError("Could not open the folder", error),
+  );
 }
 
 /**

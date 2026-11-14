@@ -25,6 +25,16 @@ export const appHotkeys = defineAppHotkeys({
     meta: { name: "Show or hide the sidebar", group: "Window" },
     options: { requireReset: true },
   },
+  "details.toggle": {
+    hotkey: "Mod+I",
+    meta: { name: "Show or hide the thread's details", group: "Window" },
+    options: { requireReset: true },
+  },
+  "panel.toggle": {
+    hotkey: "Mod+Alt+B",
+    meta: { name: "Show or hide the panel beside the thread", group: "Window" },
+    options: { requireReset: true },
+  },
   "appearance.toggle": {
     hotkey: "Mod+Shift+L",
     meta: { name: "Switch between light and dark", group: "Window" },

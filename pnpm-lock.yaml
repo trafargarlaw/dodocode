@@ -263,6 +263,9 @@ importers:
       typescript:
         specifier: ~6.0.3
         version: 6.0.3
+      virtua:
+        specifier: 0.54.2
+        version: 0.54.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       vite:
         specifier: ^8.0.16
         version: 8.3.7(@types/node@24.19.2)(jiti@2.7.0)
@@ -4047,6 +4050,32 @@ packages:
 
   victory-vendor@37.4.1:
     resolution: {integrity: sha512-geV4p2GVfVM9lgm9ZRS3pvsbAPS+BUGhM9W9nPzPHTKi+/+KjNrFXdgP6KkG+XspNZuvcXmchcrtklfuQ4gniw==}
+
+  virtua@0.54.2:
+    resolution: {integrity: sha512-lYCAxyXCGkhXVvuKv8a+LklZquy0E9dIObYcOUyo6nP4VSvLeiIsiz94mA3ZKYuM5egkke5RIi2nXi5OIATc7A==}
+    peerDependencies:
+      '@angular/common': '>=20.0.0'
+      '@angular/core': '>=20.0.0'
+      react: '>=16.14.0'
+      react-dom: '>=16.14.0'
+      solid-js: '>=1.0'
+      svelte: '>=5.0'
+      vue: '>=3.2'
+    peerDependenciesMeta:
+      '@angular/common':
+        optional: true
+      '@angular/core':
+        optional: true
+      react:
+        optional: true
+      react-dom:
+        optional: true
+      solid-js:
+        optional: true
+      svelte:
+        optional: true
+      vue:
+        optional: true
 
   vite@8.3.7:
     resolution: {integrity: sha512-oxh0dMxrayBr33ScJvvBJ2HBQ2jc1TBrXKR2NyL/MJ9WPuX19mN2DXWUmywKdyw5RFVQBo8hmtb2FMC0LHrnng==}
@@ -8104,6 +8133,11 @@ snapshots:
       d3-shape: 3.2.1
       d3-time: 3.1.1
       d3-timer: 3.0.2
+
+  virtua@0.54.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1):
+    optionalDependencies:
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
 
   vite@8.3.7(@types/node@24.19.2)(jiti@2.7.0):
     dependencies:

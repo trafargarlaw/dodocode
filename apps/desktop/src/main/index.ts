@@ -1,8 +1,10 @@
+import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from "electron";
 import windowsIcon from "../../build/icon.ico?asset";
 import linuxIcon from "../../build/icons/256x256.png?asset";
 import {
+  OPEN_FOLDER_CHANNEL,
   PICK_FOLDER_CHANNEL,
   SERVER_INFO_CHANNEL,
   TITLE_BAR_HEIGHT,
@@ -138,6 +140,14 @@ ipcMain.handle(PICK_FOLDER_CHANNEL, async (event, defaultPath: unknown) => {
     ? await dialog.showOpenDialog(window, options)
     : await dialog.showOpenDialog(options);
   return result.canceled ? null : (result.filePaths[0] ?? null);
+});
+
+// Only a folder: the system would run a program it was given, rather than show it.
+ipcMain.handle(OPEN_FOLDER_CHANNEL, async (_event, path: unknown) => {
+  if (typeof path !== "string" || !path) return "No folder was given.";
+  const found = await stat(path).catch(() => undefined);
+  if (!found?.isDirectory()) return `${path} is not a folder, or is gone.`;
+  return shell.openPath(path);
 });
 
 // A second launch shows the window that is already open.

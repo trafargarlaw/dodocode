@@ -185,12 +185,24 @@ export interface ProviderCheck extends ProviderInfo {
   commands?: SlashCommand[];
 }
 
+/** A short piece of text for the app to use, such as a thread's title. */
+export interface TextRequest {
+  prompt: string;
+  /** The JSON schema of the answer. */
+  schema: Record<string, unknown>;
+}
+
 export interface Provider {
   readonly id: ProviderId;
   readonly label: string;
   /** Checks the provider can run, and lists its models and commands. */
   check(): Promise<ProviderCheck>;
   createSession(host: SessionHost): ProviderSession;
+  /**
+   * Has a small, quick model answer `request` once, with no tools, on the person's own account.
+   * Resolves to the answer, which should match the schema; rejects when it can't.
+   */
+  writeText?(request: TextRequest, signal: AbortSignal): Promise<unknown>;
   /** The conversations its agent had in other apps. */
   readonly sessions: SessionSource;
 }

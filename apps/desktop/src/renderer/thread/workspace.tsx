@@ -1,16 +1,11 @@
 // Where a thread's agent works: in the project's folder, on the branch it has checked out, or in
-// a worktree of its own, on a new branch. It shows in the row under the composer: the picker
-// until the work starts, then where it went and what it changed.
+// a worktree of its own, on a new branch. It shows in the row under the composer, and in the
+// thread's details: the picker until the work starts, then where it went and what it changed.
+// What it changed shows in full in the panel beside the conversation.
 
-import { useEffect, useState, type ReactNode } from "react";
-import type { Project, Thread, WorkChanges, WorkspaceMode } from "@dodocode/protocol";
-import {
-  ComputerIcon,
-  GitBranchIcon,
-  GitForkIcon,
-  GitMergeIcon,
-  VisualStudioCodeIcon,
-} from "@hugeicons/core-free-icons";
+import { useState, type ReactNode } from "react";
+import type { Project, Thread, WorkspaceMode, Worktree } from "@dodocode/protocol";
+import { ComputerIcon, GitBranchIcon, GitForkIcon, GitMergeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@dodocode/ui/components/button";
 import {
@@ -20,19 +15,11 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@dodocode/ui/components/dropdown-menu";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@dodocode/ui/components/sheet";
 import { Spinner } from "@dodocode/ui/components/spinner";
 import { cn } from "@dodocode/ui/lib/utils";
 import { Tip } from "../keys";
-import { mergeWork, openThreadInEditor, threadChanges } from "../server/app-data";
-import { changeCounts, FileDiff } from "./code";
+import { mergeWork } from "../server/app-data";
+import { useChangeCount } from "./change-count";
 import { QUIET } from "./pickers";
 
 const MODE: Record<WorkspaceMode, { label: string; icon: typeof GitForkIcon }> = {
@@ -45,11 +32,16 @@ export function WorkspacePicker({
   value,
   onChange,
   branch,
+  className = QUIET,
+  side = "top",
 }: {
   value: WorkspaceMode;
   onChange: (workspace: WorkspaceMode) => void;
   /** The branch the project's folder has checked out, when it has one. */
   branch: string | undefined;
+  /** The trigger's look: quiet under the composer unless given. */
+  className?: string;
+  side?: "top" | "bottom";
 }) {
   const current = branch ?? "the commit checked out";
   const description: Record<WorkspaceMode, string> = {
@@ -65,14 +57,14 @@ export function WorkspacePicker({
             variant="ghost"
             size="sm"
             aria-label={`Where it works: ${mode.label}`}
-            className={QUIET}
+            className={className}
           />
         }
       >
         <HugeiconsIcon icon={mode.icon} strokeWidth={1.8} />
         <span className="truncate">{mode.label}</span>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="start" className="w-72">
+      <DropdownMenuContent side={side} align="start" className="w-72">
         <DropdownMenuRadioGroup
           value={value}
           onValueChange={(next: WorkspaceMode) => onChange(next)}
@@ -119,6 +111,46 @@ function Fact({
 }
 
 /**
+ * Where a thread works, as the composer's row and the thread's details show it. A thread
+ * without a project, a subagent, and one in a folder outside git have nothing to show.
+ */
+export type WorkPlace =
+  /** Brought in from another app, which worked in a checkout of its own, such as a worktree. */
+  | { kind: "other"; app: string; checkout: { path: string; branch?: string } }
+  /** Its worktree's branch was merged, and the worktree removed. */
+  | { kind: "merged"; worktree: Worktree }
+  | { kind: "worktree"; worktree: Worktree }
+  /** In the project's folder, on the branch it has checked out. */
+  | { kind: "folder" }
+  /** Not started: where it works can still change. `branch` is the folder's. */
+  | { kind: "choosing"; branch: string | undefined };
+
+export function workPlace(thread: Thread, project: Project | undefined): WorkPlace | undefined {
+  if (!project || thread.kind !== "main") return undefined;
+  const origin = thread.origin;
+  if (origin?.checkout) return { kind: "other", app: origin.app, checkout: origin.checkout };
+  const git = project.git;
+  if (!git) return undefined;
+  const worktree = thread.worktree;
+  if (worktree?.mergedAt !== undefined) return { kind: "merged", worktree };
+  if (worktree) return { kind: "worktree", worktree };
+  if (thread.startedAt !== undefined) return { kind: "folder" };
+  return { kind: "choosing", branch: git.branch };
+}
+
+/** Whether the work started in a checkout that's still there, so what it changed can be read. */
+export function changesToShow(place: WorkPlace | undefined): boolean {
+  return place?.kind === "worktree" || place?.kind === "folder" || place?.kind === "other";
+}
+
+/** The branch a started thread works on, as the person knows it. */
+export function branchLabel(thread: Thread, project: Project): string {
+  if (thread.worktree) return thread.worktree.branch;
+  const checkout = thread.origin?.checkout;
+  return (checkout ? checkout.branch : project.git?.branch) ?? "Detached HEAD";
+}
+
+/**
  * What the row under the composer says about where a thread works: at its start, the picker or
  * where the work went; at its end, the branch, which once the work started opens what changed.
  */
@@ -127,56 +159,63 @@ export function workspaceSlots({
   project,
   mode,
   onModeChange,
+  onShowChanges,
 }: {
   thread: Thread;
   project: Project | undefined;
   /** Where it will work, while that can still change. */
   mode: WorkspaceMode;
   onModeChange: (mode: WorkspaceMode) => void;
+  /** Shows what the work changed, beside the conversation. */
+  onShowChanges: () => void;
 }): { where?: ReactNode; branch?: ReactNode } {
-  const git = project?.git;
-  if (!project || thread.kind !== "main") return {};
-  const origin = thread.origin;
-  if (origin?.checkout) {
-    return {
-      where: (
-        <Fact icon={GitForkIcon} tip={`Where it worked in ${origin.app}: ${origin.checkout.path}`}>
-          Other checkout
-        </Fact>
-      ),
-      branch: <WorkspaceChip thread={thread} project={project} />,
-    };
+  const place = workPlace(thread, project);
+  if (!place || !project) return {};
+  switch (place.kind) {
+    case "other":
+      return {
+        where: (
+          <Fact icon={GitForkIcon} tip={`Where it worked in ${place.app}: ${place.checkout.path}`}>
+            Other checkout
+          </Fact>
+        ),
+        branch: <WorkspaceChip thread={thread} project={project} onShowChanges={onShowChanges} />,
+      };
+    case "merged":
+      return {
+        where: (
+          <Fact
+            icon={GitMergeIcon}
+            tip={`${place.worktree.branch} was merged, and its worktree removed`}
+          >
+            Merged into {place.worktree.base ?? "its branch"}
+          </Fact>
+        ),
+      };
+    case "worktree":
+      return {
+        where: (
+          <Fact icon={GitForkIcon} tip={`In its own checkout, at ${place.worktree.path}`}>
+            Worktree
+          </Fact>
+        ),
+        branch: <WorkspaceChip thread={thread} project={project} onShowChanges={onShowChanges} />,
+      };
+    case "folder":
+      return {
+        where: (
+          <Fact icon={ComputerIcon} tip={`In ${project.name}'s folder`}>
+            Current checkout
+          </Fact>
+        ),
+        branch: <WorkspaceChip thread={thread} project={project} onShowChanges={onShowChanges} />,
+      };
+    case "choosing":
+      return {
+        where: <WorkspacePicker value={mode} onChange={onModeChange} branch={place.branch} />,
+        branch: <StartBranch branch={place.branch} mode={mode} />,
+      };
   }
-  if (!git) return {};
-  const worktree = thread.worktree;
-  if (worktree?.mergedAt !== undefined) {
-    const base = worktree.base ?? "its branch";
-    return {
-      where: (
-        <Fact icon={GitMergeIcon} tip={`${worktree.branch} was merged, and its worktree removed`}>
-          Merged into {base}
-        </Fact>
-      ),
-    };
-  }
-  if (worktree || thread.startedAt !== undefined) {
-    return {
-      where: worktree ? (
-        <Fact icon={GitForkIcon} tip={`In its own checkout, at ${worktree.path}`}>
-          Worktree
-        </Fact>
-      ) : (
-        <Fact icon={ComputerIcon} tip={`In ${project.name}'s folder`}>
-          Current checkout
-        </Fact>
-      ),
-      branch: <WorkspaceChip thread={thread} project={project} />,
-    };
-  }
-  return {
-    where: <WorkspacePicker value={mode} onChange={onModeChange} branch={git.branch} />,
-    branch: <StartBranch branch={git.branch} mode={mode} />,
-  };
 }
 
 /** The branch work that hasn't started will be on: the folder's, or a new one from it. */
@@ -192,148 +231,51 @@ export function StartBranch({ branch, mode }: { branch: string | undefined; mode
   );
 }
 
-/** The branch a started thread works on. It opens what the work changed, and the way to merge. */
-function WorkspaceChip({ thread, project }: { thread: Thread; project: Project }) {
-  const [open, setOpen] = useState(false);
-  const worktree = thread.worktree;
-  const checkout = thread.origin?.checkout;
-  const label = worktree
-    ? worktree.branch
-    : ((checkout ? checkout.branch : project.git?.branch) ?? "Detached HEAD");
-  const changed = worktree?.changed;
-  return (
-    <>
-      <Tip
-        side="top"
-        label={
-          worktree
-            ? `On ${worktree.branch}. See what changed`
-            : `On ${label}. See what isn't committed`
-        }
-      >
-        <Button
-          variant="ghost"
-          size="sm"
-          aria-label={`Changes on ${label}`}
-          className={QUIET}
-          onClick={() => setOpen(true)}
-        >
-          <HugeiconsIcon icon={GitBranchIcon} strokeWidth={1.8} />
-          <span className="truncate font-mono text-[11.5px]">{label}</span>
-          {changed && changed.files > 0 && (
-            <Counts added={changed.added} removed={changed.removed} />
-          )}
-        </Button>
-      </Tip>
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent className="w-full gap-0 data-[side=right]:w-[min(46rem,94vw)] data-[side=right]:sm:max-w-none">
-          {open && <ChangesPanel thread={thread} project={project} branch={label} />}
-        </SheetContent>
-      </Sheet>
-    </>
-  );
-}
-
-function Counts({ added, removed }: { added: number; removed: number }) {
-  return (
-    <span className="shrink-0 font-mono text-[11.5px] tabular-nums">
-      <span className="text-emerald-600 dark:text-emerald-400">+{added}</span>{" "}
-      <span className="text-destructive">−{removed}</span>
-    </span>
-  );
-}
-
-function ChangesPanel({
+/** The branch a started thread works on, and how much its work changed, which it shows. */
+function WorkspaceChip({
   thread,
   project,
-  branch,
+  onShowChanges,
 }: {
   thread: Thread;
   project: Project;
-  branch: string;
+  onShowChanges: () => void;
 }) {
-  const [state, setState] = useState<{ changes?: WorkChanges; error?: string }>({});
-  const worktree = thread.worktree;
-
-  // Read again when a turn starts or ends, the times its activity moves, so what shows is
-  // what's there.
-  useEffect(() => {
-    let live = true;
-    threadChanges(thread.id).then(
-      (changes) => live && setState({ changes }),
-      (error: unknown) =>
-        live && setState({ error: error instanceof Error ? error.message : String(error) }),
-    );
-    return () => {
-      live = false;
-    };
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- the reason to read again
-  }, [thread.id, thread.activityAt]);
-
-  const files = state.changes?.files ?? [];
-  const counts = changeCounts(files);
-
+  const label = branchLabel(thread, project);
+  const changed = useChangeCount(thread.id, thread.activityAt) ?? thread.worktree?.changed;
   return (
-    <>
-      <SheetHeader className="border-b pr-12">
-        <SheetTitle>{worktree ? "What this work changed" : "What isn't committed"}</SheetTitle>
-        <SheetDescription>
-          {worktree
-            ? `On ${worktree.branch}, against ${worktree.base ?? "the commit it started from"}. Commits and edits not yet committed both count.`
-            : thread.origin?.checkout
-              ? `In ${thread.origin.checkout.path}, on ${branch}, where it worked in ${thread.origin.app}. Edits made there outside this thread show here too.`
-              : `In ${project.name}, on ${branch}. This thread works in the project's folder, so your own edits show here too.`}
-        </SheetDescription>
-        {worktree && (
-          <p
-            className="truncate pt-1 font-mono text-[11.5px] text-muted-foreground"
-            title={worktree.path}
-          >
-            {worktree.path}
-          </p>
-        )}
-      </SheetHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {state.error ? (
-          <p className="p-4 text-[13px] text-destructive">{state.error}</p>
-        ) : !state.changes ? (
-          <div className="grid h-40 place-items-center">
-            <Spinner className="size-5 text-muted-foreground" />
-          </div>
-        ) : files.length === 0 ? (
-          <p className="p-4 text-[13px] text-muted-foreground">Nothing has changed yet.</p>
-        ) : (
-          <div className="flex flex-col gap-3 p-4">
-            <p className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
-              {files.length} {files.length === 1 ? "file" : "files"}
-              <Counts added={counts.added} removed={counts.removed} />
-            </p>
-            {state.changes.truncated && (
-              <p className="rounded-lg border bg-muted/40 px-3 py-2 text-[12.5px] text-muted-foreground">
-                Some of it is too large to show here. Open the folder in VS Code to see all of it.
-              </p>
-            )}
-            {files.map((change) => (
-              <FileDiff key={`${change.path}:${change.kind}`} change={change} />
-            ))}
-          </div>
-        )}
-      </div>
-      <SheetFooter className="flex-row items-center justify-end border-t">
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1.5"
-          onClick={() => openThreadInEditor(thread.id)}
-        >
-          <HugeiconsIcon icon={VisualStudioCodeIcon} strokeWidth={1.8} />
-          Open in VS Code
-        </Button>
-        {worktree?.base && (
-          <MergeButton thread={thread} disabled={files.length === 0 && !!state.changes} />
-        )}
-      </SheetFooter>
-    </>
+    <Tip
+      side="top"
+      label={
+        thread.worktree
+          ? `On ${thread.worktree.branch}. See what changed`
+          : `On ${label}. See what isn't committed`
+      }
+    >
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-label={`Changes on ${label}`}
+        className={QUIET}
+        onClick={onShowChanges}
+      >
+        <HugeiconsIcon icon={GitBranchIcon} strokeWidth={1.8} />
+        <span className="truncate font-mono text-[11.5px]">{label}</span>
+        {changed && changed.files > 0 && <Counts added={changed.added} removed={changed.removed} />}
+      </Button>
+    </Tip>
+  );
+}
+
+/** Line counts, grouped with commas: a space between groups reads as two numbers. */
+const LINES = new Intl.NumberFormat("en-US");
+
+export function Counts({ added, removed }: { added: number; removed: number }) {
+  return (
+    <span className="shrink-0 font-mono text-[11.5px] tabular-nums">
+      <span className="text-emerald-600 dark:text-emerald-400">+{LINES.format(added)}</span>{" "}
+      <span className="text-destructive">−{LINES.format(removed)}</span>
+    </span>
   );
 }
 

@@ -65,6 +65,7 @@ import type {
   IdeaRequest,
   PageRequest,
   Provider,
+  TextRequest,
 } from "./providers/types";
 import {
   answered,
@@ -110,6 +111,8 @@ const DEFAULT_SETTINGS: Settings = {
   review: { auto: false },
 };
 
+/** How long a model gets to write a bit of text, such as a title, before the next one tries. */
+const WRITE_TEXT_TIMEOUT_MS = 60_000;
 /** The most images of the task's a reviewer is sent with what it is asked. */
 const REVIEW_IMAGES = 8;
 /** The most of a project's own way to review a reviewer is sent. */
@@ -313,6 +316,26 @@ export class App implements ThreadContext {
     const provider = this.providers.get(id);
     if (!provider) throw new Error(`Unknown provider ${id}.`);
     return provider;
+  }
+
+  async writeText(preferred: ProviderId, request: TextRequest): Promise<unknown> {
+    // The thread's own provider first, then any other that's signed in.
+    const order = [...this.providers.values()].toSorted(
+      (a, b) => Number(b.id === preferred) - Number(a.id === preferred),
+    );
+    for (const provider of order) {
+      if (!provider.writeText || this.providerInfo.get(provider.id)?.status !== "ready") continue;
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), WRITE_TEXT_TIMEOUT_MS);
+      try {
+        return await provider.writeText(request, abort.signal);
+      } catch (error) {
+        log("app", `${provider.label} could not write text`, errorText(error));
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return undefined;
   }
 
   workDir(thread: Thread): string {
@@ -859,6 +882,34 @@ export class App implements ThreadContext {
     if (!runtime || !origin?.checkout || origin.checkout.branch === branch) return;
     const checkout = { path: origin.checkout.path, ...(branch ? { branch } : {}) };
     runtime.replace({ ...runtime.thread, origin: { ...origin, checkout } });
+  }
+
+  /**
+   * Where a thread's changes are read, and from what: a worktree from the branch it came from,
+   * else the folder the thread works in from its last commit. No folder when no repository holds
+   * it, or the worktree is gone. `against` names the branch, for work in a worktree.
+   */
+  private async changesWhere(
+    threadId: string,
+  ): Promise<{ folder?: string; base?: string; against?: string }> {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new Error("The thread is gone.");
+    const root = this.rootOf(thread);
+    const worktree = root.worktree;
+    if (worktree && worktree.mergedAt === undefined) {
+      const against = worktree.base ? { against: worktree.base } : {};
+      if (!existsSync(worktree.path)) return against;
+      return { folder: worktree.path, base: worktree.base ?? worktree.from, ...against };
+    }
+    // A conversation from another app carries on where it worked there. A thread without a
+    // project works in a folder of its own, which no repository holds.
+    const folder = root.origin
+      ? root.origin.cwd
+      : root.projectId
+        ? this.projectPath(root.projectId)
+        : undefined;
+    if (!folder || !(await repoOf(folder))) return {};
+    return { folder };
   }
 
   /** Counts what a thread's work changed in its worktree, after a turn. */
@@ -1452,24 +1503,16 @@ export class App implements ThreadContext {
     },
 
     "thread.changes": async ({ threadId }) => {
-      const thread = this.threads.get(threadId);
-      if (!thread) throw new Error("The thread is gone.");
-      const root = this.rootOf(thread);
-      const worktree = root.worktree;
-      if (worktree && worktree.mergedAt === undefined) {
-        if (!existsSync(worktree.path)) return { against: worktree.base, files: [] };
-        const changes = await changesIn(worktree.path, worktree.base ?? worktree.from);
-        return { ...(worktree.base ? { against: worktree.base } : {}), ...changes };
-      }
-      if (root.origin) {
-        if (!(await repoOf(root.origin.cwd))) return { files: [] };
-        return changesIn(root.origin.cwd, undefined);
-      }
-      // A thread without a project works in a folder of its own, which no repository holds.
-      if (!root.projectId) return { files: [] };
-      const folder = this.projectPath(root.projectId);
-      if (!(await repoOf(folder))) return { files: [] };
-      return changesIn(folder, undefined);
+      const where = await this.changesWhere(threadId);
+      const against = where.against ? { against: where.against } : {};
+      if (!where.folder) return { ...against, files: [] };
+      return { ...against, ...(await changesIn(where.folder, where.base)) };
+    },
+
+    "thread.changeCount": async ({ threadId }) => {
+      const where = await this.changesWhere(threadId);
+      if (!where.folder) return { files: 0, added: 0, removed: 0 };
+      return countChanges(where.folder, where.base);
     },
 
     "thread.merge": async ({ threadId }) => {

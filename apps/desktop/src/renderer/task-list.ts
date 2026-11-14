@@ -1,7 +1,13 @@
 // How the sidebar and the board sort the threads: chats and tasks, by where each task is, with
 // what needs the person first. Both are views of one list, so they share these rules.
 
-import { TASK_STATUS_LABEL, unstarted, type TaskStatus, type Thread } from "@dodocode/protocol";
+import {
+  TASK_STATUS_LABEL,
+  unstarted,
+  type TaskStatus,
+  type Thread,
+  type ThreadStatus,
+} from "@dodocode/protocol";
 
 /** A group in the sidebar: a column of the board, or the chats, which are not on the board. */
 export type GroupId = TaskStatus | "chats";
@@ -39,8 +45,11 @@ export interface ListFilter {
 
 export interface SidebarRow {
   thread: Thread;
-  /** A subagent's thread, shown under the thread that started it. */
-  nested: boolean;
+  /**
+   * What the row's mark shows: the thread's own status, or that one of its subagents waits for
+   * the person or runs. Subagents have no rows; they show in the thread's details.
+   */
+  status: ThreadStatus;
 }
 
 export interface SidebarGroup {
@@ -53,9 +62,10 @@ export interface SidebarGroup {
 }
 
 /**
- * The sidebar's groups, each holding its top threads with their subagents under them. A group
- * shows `limit` top threads, and the open one even past that; a chat left for a while waits
- * behind "Show more". Archived threads show only while open, and empty groups not at all.
+ * The sidebar's groups, each holding top threads only: a subagent or a review shows in the
+ * details of the thread it belongs to. A group shows `limit` top threads, and the open one, or
+ * the one whose subagent is open, even past that; a chat left for a while waits behind "Show
+ * more". Archived threads show only while open, and empty groups not at all.
  */
 export function sidebarGroups(
   threads: readonly Thread[],
@@ -93,17 +103,35 @@ export function sidebarGroups(
     const shown = all ? tops : tops.filter(recent).slice(0, limit);
     if (openRoot && tops.includes(openRoot) && !shown.includes(openRoot)) shown.push(openRoot);
 
-    const rows: SidebarRow[] = [];
-    for (const top of shown) {
-      rows.push({ thread: top, nested: false });
-      for (const child of tree.children.get(top.id) ?? []) {
-        const active = child.status === "running" || child.status === "waiting";
-        if (top === openRoot || active) rows.push({ thread: child, nested: true });
-      }
-    }
+    const rows = shown.map((top) => ({
+      thread: top,
+      status: shownStatus(top, tree.children.get(top.id) ?? []),
+    }));
     groups.push({ id, rows, total: tops.length, hidden: tops.length - shown.length });
   }
   return groups;
+}
+
+/**
+ * The top thread a thread belongs to: itself, or the thread whose subagent or review it is. Its
+ * row stands for it in the sidebar.
+ */
+export function topThreadId(threads: readonly Thread[], threadId: string): string | undefined {
+  const tree = threadTree(threads);
+  const thread = tree.byId.get(threadId);
+  return thread ? tree.rootOf(thread).id : undefined;
+}
+
+/** Waiting comes first, as it needs the person; a subagent's error stays in its own thread. */
+function shownStatus(top: Thread, children: readonly Thread[]): ThreadStatus {
+  if (top.status === "waiting" || children.some((child) => child.status === "waiting")) {
+    return "waiting";
+  }
+  if (top.status === "error") return "error";
+  if (top.status === "running" || children.some((child) => child.status === "running")) {
+    return "running";
+  }
+  return top.status;
 }
 
 /** The board's columns, the backlog among them, and the ideas set aside as not worth doing. */

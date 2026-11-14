@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { FileChange } from "@dodocode/protocol";
 import {
   CodeBlock,
@@ -12,6 +12,7 @@ import {
 import { useHighlightedCode } from "@dodocode/ui/hooks/use-highlighted-code";
 import { cn } from "@dodocode/ui/lib/utils";
 import { diffLines } from "./blocks";
+import { DiffRows } from "./diff-view";
 
 /** Code, highlighted when the language is one the highlighter knows. */
 export function Code({
@@ -73,7 +74,7 @@ const CHANGE_LABEL: Record<FileChange["kind"], string> = {
 
 /** One file's change, with its diff when there is one. */
 export function FileDiff({ change }: { change: FileChange }) {
-  const parsed = change.diff ? diffLines(change.diff) : undefined;
+  const parsed = useMemo(() => (change.diff ? diffLines(change.diff) : undefined), [change.diff]);
   const title = (
     <span className="flex min-w-0 items-center gap-2">
       <span className="shrink-0 text-muted-foreground">{CHANGE_LABEL[change.kind]}</span>
@@ -91,7 +92,7 @@ export function FileDiff({ change }: { change: FileChange }) {
   );
   return (
     <CodeBlock size="sm">
-      <CodeBlockHeader>
+      <CodeBlockHeader className="pb-2">
         <CodeBlockTitle className="min-w-0">{title}</CodeBlockTitle>
         {change.diff && (
           <CodeBlockActions>
@@ -100,26 +101,9 @@ export function FileDiff({ change }: { change: FileChange }) {
         )}
       </CodeBlockHeader>
       {parsed && parsed.lines.length > 0 && (
-        <CodeBlockContent className="max-h-96 text-[12.5px]">
-          {parsed.lines.map((line, index) => (
-            <CodeBlockLine
-              // oxlint-disable-next-line react/no-array-index-key
-              key={index}
-              variant={
-                line.kind === "added"
-                  ? "added"
-                  : line.kind === "removed"
-                    ? "removed"
-                    : line.kind === "hunk"
-                      ? "highlighted"
-                      : "default"
-              }
-              className={cn(line.kind === "hunk" && "text-muted-foreground")}
-            >
-              {line.text}
-            </CodeBlockLine>
-          ))}
-        </CodeBlockContent>
+        <div className="max-h-96 overflow-y-auto border-t">
+          <DiffRows lines={parsed.lines} path={change.movedTo ?? change.path} className="py-1" />
+        </div>
       )}
     </CodeBlock>
   );

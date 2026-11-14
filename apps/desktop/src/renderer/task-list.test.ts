@@ -6,6 +6,7 @@ import {
   dropOf,
   reviewable,
   sidebarGroups,
+  topThreadId,
   type ListFilter,
 } from "./task-list";
 
@@ -37,7 +38,10 @@ const ALL: ListFilter = { needsYou: false };
 
 const ids = (cards: Thread[]) => cards.map((card) => card.id);
 
-/** The groups as `group: rows`, a nested row indented, and the count behind "Show more". */
+/**
+ * The groups as `group: rows`, and the count behind "Show more". A row whose mark shows another
+ * status than its thread's own, from a subagent, says which.
+ */
 function groups(
   threads: Thread[],
   {
@@ -53,7 +57,9 @@ function groups(
   }> = {},
 ) {
   return sidebarGroups(threads, { openId, filter, limit, now }).map((group) => {
-    const rows = group.rows.map((row) => (row.nested ? `  ${row.thread.id}` : row.thread.id));
+    const rows = group.rows.map((row) =>
+      row.status === row.thread.status ? row.thread.id : `${row.thread.id} (${row.status})`,
+    );
     return `${group.id}: ${rows.join(", ")}${group.hidden ? ` +${group.hidden}` : ""}`;
   });
 }
@@ -123,45 +129,49 @@ describe("the sidebar", () => {
       "shows what needs the person, through a subagent too",
       [thread("a", { status: "error" }), thread("b"), thread("c"), sub("s", "c", "waiting")],
       { filter: { needsYou: true } },
-      ["chats: a, c,   s"],
+      ["chats: a, c (waiting)"],
+    ],
+    [
+      "lists top threads only, the open thread's subagents too",
+      [sub("s", "a", "running"), thread("a", { activityAt: 1 }), thread("b")],
+      { openId: "a" },
+      ["chats: a (running), b"],
+    ],
+    [
+      "shows the top thread of an open subagent's subagent past the limit",
+      [thread("a"), thread("b"), thread("c"), sub("s1", "c"), sub("s2", "s1")],
+      { limit: 2, openId: "s2" },
+      ["chats: a, b, c"],
+    ],
+    [
+      "marks a thread waiting while its subagent waits, over its own error",
+      [thread("a", { status: "error" }), sub("s", "a", "waiting"), sub("r", "a", "running")],
+      {},
+      ["chats: a (waiting)"],
+    ],
+    [
+      "leaves a subagent's error in its own thread",
+      [thread("a"), sub("s", "a", "error")],
+      {},
+      ["chats: a"],
+    ],
+    [
+      "lists a subagent whose parent is gone as a top thread",
+      [sub("s", "gone"), thread("a")],
+      {},
+      ["chats: s, a"],
     ],
   ])("%s", (_name, list, options, expected) => {
     expect(groups(list, options)).toEqual(expected);
   });
 
-  test.each<[string, Thread[], string | undefined, string[]]>([
-    [
-      "nests a subagent under the open thread",
-      [sub("s", "a"), thread("a"), thread("b")],
-      "a",
-      ["chats: a,   s, b"],
-    ],
-    [
-      "hides an idle subagent of a closed thread",
-      [sub("s", "a"), thread("a"), thread("b")],
-      "b",
-      ["chats: a, b"],
-    ],
-    [
-      "shows a running subagent of a closed thread",
-      [sub("s", "a", "running"), thread("a"), thread("b")],
-      "b",
-      ["chats: a,   s, b"],
-    ],
-    [
-      "nests a subagent's subagent under the top thread",
-      [sub("s2", "s1"), sub("s1", "a"), thread("a")],
-      "s2",
-      ["chats: a,   s2,   s1"],
-    ],
-    [
-      "lists a subagent whose parent is gone as a top thread",
-      [sub("s", "gone"), thread("a")],
-      undefined,
-      ["chats: s, a"],
-    ],
-  ])("%s", (_name, list, openId, expected) => {
-    expect(groups(list, { openId })).toEqual(expected);
+  test.each<[string, string, string | undefined]>([
+    ["a top thread stands for itself", "a", "a"],
+    ["a subagent's subagent belongs to the top thread", "s2", "a"],
+    ["a thread not in the list belongs to none", "gone", undefined],
+  ])("%s", (_name, threadId, expected) => {
+    const list = [thread("a"), sub("s1", "a"), sub("s2", "s1")];
+    expect(topThreadId(list, threadId)).toBe(expected);
   });
 });
 

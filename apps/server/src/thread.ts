@@ -36,6 +36,7 @@ import type {
   ProviderSession,
   SessionHost,
   SubagentWriter,
+  TextRequest,
   TurnImage,
   TurnMessage,
   TurnOutcome,
@@ -44,6 +45,7 @@ import { endJob, savedJobs, startJob } from "./jobs";
 import { relativePath } from "./providers/claude-tools";
 import type { ResumePoints, Store } from "./store";
 import { moved, started } from "./tasks";
+import { betterTitleRequest, firstTitleRequest, readTitle } from "./titles";
 import { errorText, log, newId, titleFrom, within } from "./util";
 
 /** What a thread needs from the rest of the server. */
@@ -72,6 +74,11 @@ export interface ThreadContext {
   answerFindings(task: Thread, answers: FindingAnswerRequest[]): string;
   /** Sets how the project of `from` is reviewed. Returns what to tell the agent. */
   setReviewInstructions(from: Thread, path: string | null): string;
+  /**
+   * Has a model answer `request`: `preferred`'s when it can, or another signed-in provider's.
+   * Resolves to undefined when none could.
+   */
+  writeText(preferred: ProviderId, request: TextRequest): Promise<unknown>;
 }
 
 /** A message to send, and, when the app wrote it for the person, what it is. */
@@ -108,6 +115,8 @@ export class ThreadRuntime {
   private resume: ResumePoints;
   /** The subagent threads this thread's session writes into, by tool item. */
   private subagents = new Map<string, ThreadRuntime>();
+  /** A title a model guessed, to write again once the agent has answered. */
+  private retitle: string | undefined;
 
   private ctx: ThreadContext;
 
@@ -312,7 +321,9 @@ export class ThreadRuntime {
     };
     this.turn = turn;
     if (this.thread.title === "New thread" && message.text.trim()) {
+      // The first line shows until a model writes a better title.
       this.thread = { ...this.thread, title: titleFrom(message.text) };
+      void this.writeTitle(firstTitleRequest(message.text, message.images.length));
     }
     this.thread = {
       ...started(this.thread, turn.startedAt),
@@ -391,6 +402,7 @@ export class ThreadRuntime {
     };
     this.flush();
     this.trimCache();
+    this.refineTitle();
     this.refreshStatus();
     // The next queued message starts the next turn, unless the person stopped this one.
     if (status !== "interrupted") {
@@ -400,6 +412,53 @@ export class ThreadRuntime {
         void this.startTurn({ text: next.text, images: next.images, app: next.app });
       }
     }
+  }
+
+  // The title
+
+  /**
+   * Has a model write the thread's title, and keeps it unless the person renamed the thread
+   * meanwhile. Without a model to write it, the title stays as it is.
+   */
+  private async writeTitle(request: TextRequest, again = false): Promise<void> {
+    const before = this.thread.title;
+    let written;
+    try {
+      written = readTitle(await this.ctx.writeText(this.thread.settings.provider, request));
+    } catch (error) {
+      log("thread", "title not written", errorText(error));
+    }
+    if (!written || this.thread.title !== before) return;
+    // A new title doesn't count as activity, so the thread keeps its place in lists.
+    if (written.title !== before) this.replace({ ...this.thread, title: written.title });
+    if (written.needsRefinement && !again) {
+      this.retitle = this.thread.title;
+      this.refineTitle();
+    }
+  }
+
+  /** Writes the title again once the agent's reply says what a vague first message meant. */
+  private refineTitle(): void {
+    if (this.retitle === undefined || this.turn) return;
+    const guess = this.retitle;
+    this.retitle = undefined;
+    // The person named it themselves.
+    if (guess !== this.thread.title) return;
+    const conversation = this.conversation();
+    if (!conversation.includes("ASSISTANT:")) return;
+    void this.writeTitle(betterTitleRequest(guess, conversation), true);
+  }
+
+  /** What the person and the agent said in the thread, as a title's prompt gives it. */
+  private conversation(): string {
+    return this.items()
+      .flatMap((item) => {
+        if (item.type === "user" && item.text.trim()) return [`USER: ${item.text.trim()}`];
+        if (item.type === "assistant" && item.text.trim())
+          return [`ASSISTANT: ${item.text.trim()}`];
+        return [];
+      })
+      .join("\n\n");
   }
 
   private turnMessage(message: OutgoingMessage): TurnMessage {

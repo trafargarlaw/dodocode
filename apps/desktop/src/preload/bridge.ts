@@ -10,6 +10,8 @@ export const WINDOW_THEME_CHANNEL = "window:theme";
 export const SERVER_INFO_CHANNEL = "server:info";
 /** The IPC channel the renderer asks the system's folder picker on. */
 export const PICK_FOLDER_CHANNEL = "dialog:pick-folder";
+/** The IPC channel the renderer asks to show a folder in the system's file manager on. */
+export const OPEN_FOLDER_CHANNEL = "shell:open-folder";
 
 /** The colours of the parts of the window that the page cannot draw. */
 export interface WindowTheme {
@@ -42,4 +44,6 @@ export interface DodocodeBridge {
    * is cancelled.
    */
   pickFolder(defaultPath?: string): Promise<string | null>;
+  /** Shows a folder in the system's file manager. Resolves to why it couldn't, or to "". */
+  openFolder(path: string): Promise<string>;
 }

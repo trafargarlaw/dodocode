@@ -13,6 +13,7 @@ import type {
   ProviderSession,
   SessionHost,
   SessionSource,
+  TextRequest,
   TurnMessage,
 } from "./providers/types";
 import { errorText } from "./util";
@@ -46,6 +47,10 @@ export class FakeAgent implements Provider {
   elsewhere: FakeConversation[] = [];
   /** Set to make copying a conversation fail. */
   copyFails = false;
+  /** What its small model answers the app's requests for text. Unset, it can't answer. */
+  writer: ((request: TextRequest) => unknown) | undefined;
+  /** The requests for text it was sent. */
+  readonly textRequests: TextRequest[] = [];
   private made = 0;
   readonly sessions: SessionSource = {
     list: () => Promise.resolve(this.elsewhere.toSorted((a, b) => b.updatedAt - a.updatedAt)),
@@ -82,6 +87,12 @@ export class FakeAgent implements Provider {
       status: "ready",
       models: [{ id: "fake", label: "Fake", efforts: [] }],
     });
+  }
+
+  async writeText(request: TextRequest): Promise<unknown> {
+    this.textRequests.push(request);
+    if (!this.writer) throw new Error("The fake agent writes no text.");
+    return await this.writer(request);
   }
 
   createSession(host: SessionHost): ProviderSession {

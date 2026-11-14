@@ -5,45 +5,33 @@ import {
   useRef,
   useState,
   type MouseEvent,
+  type ReactNode,
   type Ref,
   type UIEvent,
 } from "react";
+import { useAppHotkeys, useHotkey } from "@tanstack/react-hotkeys";
 import { and, eq, useLiveQuery } from "@tanstack/react-db";
 import {
   unstarted,
-  type BackgroundJob,
   type Item,
   type Project,
   type QueuedMessage,
   type Thread,
-  type ThreadOrigin,
 } from "@dodocode/protocol";
 import {
-  ArrowDown01Icon,
   ArrowLeft01Icon,
-  BubbleChatDownload01Icon,
   Cancel01Icon,
   Clock01Icon,
-  CommandLineIcon,
   InspectCodeIcon,
+  SidebarRightIcon,
   SteeringIcon,
-  StopCircleIcon,
   Scissor01Icon,
   Tick02Icon,
   UserMultiple02Icon,
   ViewIcon,
-  VisualStudioCodeIcon,
-  ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@dodocode/ui/components/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@dodocode/ui/components/dropdown-menu";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -52,14 +40,12 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from "@dodocode/ui/components/message-scroller";
-import { Popover, PopoverContent, PopoverTrigger } from "@dodocode/ui/components/popover";
 import { Spinner } from "@dodocode/ui/components/spinner";
 import { cn } from "@dodocode/ui/lib/utils";
 import { Tip } from "../keys";
 import {
   changeThreadSettings,
   moveTask,
-  openThreadInEditor,
   projects,
   setWorkspace,
   settings as settingsRows,
@@ -73,20 +59,19 @@ import {
   removeQueued,
   sendMessage,
   steerQueued,
-  stopJob,
   threadData,
 } from "../server/thread-data";
 import { GROUP_LABEL, reviewable } from "../task-list";
-import { MoveItems, StatusGlyph } from "../task-ui";
-import { duration } from "../time";
-import { folderName } from "../palette/sessions";
+import { StatusGlyph } from "../task-ui";
 import { openThread } from "../view";
-import { toBlocks, type Block } from "./blocks";
+import { latestTodos, toBlocks, type Block } from "./blocks";
 import { clearDraft, Composer, readyDraft } from "./composer";
+import { DetailsButton, DetailsCard } from "./details";
 import { ImageGallery, Images } from "./image-view";
 import { BlockView, Working } from "./messages";
 import { ReviewerAccess } from "./pickers";
-import { MergeButton, workspaceSlots } from "./workspace";
+import { SidePanel, useSidePanel } from "./side-panel";
+import { changesToShow, MergeButton, workPlace, workspaceSlots } from "./workspace";
 
 export function ThreadView({
   threadId,
@@ -95,6 +80,15 @@ export function ThreadView({
   threadId: string;
   inputRef: Ref<HTMLTextAreaElement>;
 }) {
+  const hotkeys = useAppHotkeys();
+  const {
+    measure,
+    open: panelKeptOpen,
+    over,
+    toggle: togglePanel,
+    show: showPanel,
+    close: closePanel,
+  } = useSidePanel();
   const data = threadData(threadId);
   const { data: thread } = useLiveQuery({
     queryKey: ["thread", threadId],
@@ -130,6 +124,10 @@ export function ThreadView({
     query: (q) => q.from({ row: settingsRows }).findOne(),
   });
 
+  // The panel shows what the work changed, so it has nothing to show before the work starts.
+  const panelShows = !!thread && !!project && changesToShow(workPlace(thread, project));
+  useHotkey(hotkeys["panel.toggle"], togglePanel, { enabled: panelShows });
+
   // The app's list loads first, and the window leaves a thread that is gone.
   if (!thread) return null;
 
@@ -137,78 +135,112 @@ export function ThreadView({
   const running = thread.status === "running" || thread.status === "waiting";
   // A task nobody started has no messages yet, only what it covers.
   const fresh = unstarted(thread) && itemList.length === 0;
+  const workMode = thread.workspace ?? saved?.workspace ?? "worktree";
   const slots = workspaceSlots({
     thread,
     project,
-    mode: thread.workspace ?? saved?.workspace ?? "worktree",
+    mode: workMode,
     onModeChange: (workspace) => setWorkspace(threadId, workspace),
+    onShowChanges: showPanel,
   });
+  const panelOpen = panelShows && panelKeptOpen;
 
   return (
     <ImageGallery>
-      <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]">
-        <ThreadHeader thread={thread} project={project} jobs={jobs} />
-        {items.isLoadingError ? (
-          <div className="grid place-items-center p-8 text-center text-muted-foreground">
-            This thread could not be opened. It may have been deleted.
-          </div>
-        ) : !items.isReady ? (
-          <div className="grid place-items-center">
-            <Spinner className="size-5 text-muted-foreground" />
-          </div>
-        ) : fresh ? (
-          <TaskBrief thread={thread} />
-        ) : (
-          <Transcript key={threadId} thread={thread} items={itemList} />
-        )}
-        <div className="mx-auto w-full max-w-3xl px-5 pb-4">
-          {thread.kind === "subagent" ? (
-            <SubagentNote thread={thread} />
-          ) : (
-            <>
-              {queue.length > 0 && (
-                <QueueList threadId={threadId} queue={queue} running={running} />
-              )}
-              {fresh ? (
-                <Composer
-                  draftKey={threadId}
-                  projectId={thread.projectId}
-                  settings={thread.settings}
-                  onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
-                  running={false}
-                  placeholder="Add anything else the agent should know, then start"
-                  sendLabel="Start"
-                  allowEmpty
-                  {...slots}
-                  onSend={(message) =>
-                    startTask(
-                      thread,
-                      message.text || message.images.length > 0 ? message : undefined,
-                    )
-                  }
-                  inputRef={inputRef}
-                />
+      <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)]">
+        <ThreadHeader
+          thread={thread}
+          project={project}
+          details={<DetailsButton jobs={jobs} />}
+          panel={panelShows ? { open: panelOpen, toggle: togglePanel } : undefined}
+        />
+        <div ref={measure} className="relative flex min-h-0">
+          <div className="relative grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto]">
+            <DetailsCard
+              thread={thread}
+              project={project}
+              todos={latestTodos(itemList)}
+              jobs={jobs}
+              mode={workMode}
+              onShowChanges={showPanel}
+            />
+            {items.isLoadingError ? (
+              <div className="grid place-items-center p-8 text-center text-muted-foreground">
+                This thread could not be opened. It may have been deleted.
+              </div>
+            ) : !items.isReady ? (
+              <div className="grid place-items-center">
+                <Spinner className="size-5 text-muted-foreground" />
+              </div>
+            ) : fresh ? (
+              <TaskBrief thread={thread} />
+            ) : (
+              <Transcript key={threadId} thread={thread} items={itemList} />
+            )}
+            <div className="mx-auto w-full max-w-3xl px-5 pb-4">
+              {thread.kind === "subagent" ? (
+                <SubagentNote thread={thread} />
               ) : (
-                <Composer
-                  draftKey={threadId}
-                  projectId={thread.projectId}
-                  context={thread.context}
-                  settings={thread.settings}
-                  onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
-                  running={running}
-                  placeholder={running ? "Add to what the agent is doing" : "Reply to the agent"}
-                  onSend={(message, mode) => sendMessage(threadId, message, mode)}
-                  onStop={() => interrupt(threadId)}
-                  inputRef={inputRef}
-                  {...slots}
-                  access={
-                    thread.kind === "review" ? (
-                      <ReviewerAccess provider={thread.settings.provider} />
-                    ) : undefined
-                  }
-                />
+                <>
+                  {queue.length > 0 && (
+                    <QueueList threadId={threadId} queue={queue} running={running} />
+                  )}
+                  {fresh ? (
+                    <Composer
+                      draftKey={threadId}
+                      projectId={thread.projectId}
+                      settings={thread.settings}
+                      onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
+                      running={false}
+                      placeholder="Add anything else the agent should know, then start"
+                      sendLabel="Start"
+                      allowEmpty
+                      {...slots}
+                      onSend={(message) =>
+                        startTask(
+                          thread,
+                          message.text || message.images.length > 0 ? message : undefined,
+                        )
+                      }
+                      inputRef={inputRef}
+                    />
+                  ) : (
+                    <Composer
+                      draftKey={threadId}
+                      projectId={thread.projectId}
+                      context={thread.context}
+                      settings={thread.settings}
+                      onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
+                      running={running}
+                      placeholder={
+                        running ? "Add to what the agent is doing" : "Reply to the agent"
+                      }
+                      onSend={(message, mode) => sendMessage(threadId, message, mode)}
+                      onStop={() => interrupt(threadId)}
+                      inputRef={inputRef}
+                      {...slots}
+                      access={
+                        thread.kind === "review" ? (
+                          <ReviewerAccess provider={thread.settings.provider} />
+                        ) : undefined
+                      }
+                    />
+                  )}
+                </>
               )}
-            </>
+            </div>
+          </div>
+          {panelOpen && over && (
+            <button
+              type="button"
+              tabIndex={-1}
+              aria-label="Hide the panel"
+              className="absolute inset-0 z-10 cursor-default bg-black/10 dark:bg-black/30"
+              onClick={closePanel}
+            />
+          )}
+          {panelOpen && project && (
+            <SidePanel thread={thread} project={project} over={over} onClose={closePanel} />
           )}
         </div>
       </div>
@@ -403,34 +435,23 @@ function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
   );
 }
 
-/** Where a thread brought in from another app was started, and how it carries on. */
-function OriginChip({ origin }: { origin: ThreadOrigin }) {
-  const how = origin.folderGone
-    ? `Its folder, ${folderName(origin.cwd)}, was gone, so it has the history only.`
-    : origin.mode === "same"
-      ? `It carries on the same conversation, which ${origin.app} can carry on too. It works in ${folderName(origin.cwd)}.`
-      : `It carries on a copy. The original stays in ${origin.app} as it was. It works in ${folderName(origin.cwd)}.`;
-  return (
-    <Tip label={`Brought in from ${origin.app}. ${how}`}>
-      <span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-md bg-muted px-1.5 text-[11.5px] text-muted-foreground">
-        <HugeiconsIcon icon={BubbleChatDownload01Icon} strokeWidth={1.8} className="size-3.5" />
-        {origin.mode === "copy" ? `Copy from ${origin.app}` : `From ${origin.app}`}
-      </span>
-    </Tip>
-  );
-}
-
 function ThreadHeader({
   thread,
   project,
-  jobs,
+  details,
+  panel,
 }: {
   thread: Thread;
   project: Project | undefined;
-  jobs: BackgroundJob[];
+  /** The button that opens the thread's details. */
+  details: ReactNode;
+  /** The panel beside the conversation, when it has something to show. */
+  panel: { open: boolean; toggle: () => void } | undefined;
 }) {
+  const hotkeys = useAppHotkeys();
   const parentId = thread.parentId;
   const back = thread.kind === "review" ? "Back to the task" : "Back to the thread that started it";
+  const panelLabel = panel?.open ? "Hide the panel" : "Show what changed, in a panel";
 
   return (
     <header className="flex h-11 min-w-0 items-center gap-2 border-b px-4">
@@ -446,90 +467,45 @@ function ThreadHeader({
           </Button>
         </Tip>
       )}
-      {thread.kind !== "main" && (
+      {thread.kind !== "main" ? (
         <HugeiconsIcon
           icon={thread.kind === "review" ? InspectCodeIcon : UserMultiple02Icon}
           strokeWidth={1.8}
           aria-label={thread.kind === "review" ? "A review" : "A subagent"}
           className="size-4 shrink-0 text-muted-foreground"
         />
+      ) : (
+        thread.task && (
+          <Tip label={GROUP_LABEL[thread.task.status]}>
+            <span className="grid shrink-0 place-items-center">
+              <StatusGlyph status={thread.task.status} />
+              <span className="sr-only">{GROUP_LABEL[thread.task.status]}</span>
+            </span>
+          </Tip>
+        )
       )}
       <h1 className="min-w-0 truncate font-medium">{thread.title}</h1>
-      {project ? (
-        <span className="shrink-0 text-muted-foreground">{project.name}</span>
-      ) : (
-        thread.kind === "main" && <span className="shrink-0 text-muted-foreground">No project</span>
-      )}
-      {thread.origin && <OriginChip origin={thread.origin} />}
+      {project && <span className="shrink-0 text-muted-foreground">{project.name}</span>}
       <div className="ml-auto flex shrink-0 items-center gap-1">
-        {thread.kind === "main" && <StatusPill thread={thread} />}
         {thread.kind === "main" && <ReviewButton thread={thread} />}
         {thread.kind === "main" && <PrimaryAction thread={thread} />}
-        {jobs.length > 0 && <JobsButton threadId={thread.id} jobs={jobs} />}
-        {project && (
-          <Tip
-            label={
-              thread.worktree?.mergedAt === undefined && thread.worktree
-                ? "Open its worktree in VS Code"
-                : "Open in VS Code"
-            }
-          >
+        {details}
+        {panel && (
+          <Tip label={panelLabel} hotkey={hotkeys["panel.toggle"]}>
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Open in VS Code"
-              className="text-muted-foreground"
-              onClick={() => openThreadInEditor(thread.id)}
+              aria-label={panelLabel}
+              aria-expanded={panel.open}
+              className={cn("text-muted-foreground", panel.open && "bg-muted text-foreground")}
+              onClick={panel.toggle}
             >
-              <HugeiconsIcon icon={VisualStudioCodeIcon} strokeWidth={1.8} />
+              <HugeiconsIcon icon={SidebarRightIcon} strokeWidth={1.8} />
             </Button>
           </Tip>
         )}
       </div>
     </header>
-  );
-}
-
-/** Where the thread is on the board, and a menu to put it elsewhere. */
-function StatusPill({ thread }: { thread: Thread }) {
-  const status = thread.task?.status ?? "chats";
-  const label = thread.task ? GROUP_LABEL[thread.task.status] : "Chat";
-  // A chat without a project has nothing to change, so it can't be a task.
-  if (!thread.task && !thread.projectId) {
-    return (
-      <Tip label="A chat without a project can't be a task">
-        <span className="flex h-7 items-center gap-1.5 px-2 text-[12.5px] text-muted-foreground">
-          <StatusGlyph status="chats" />
-          Chat
-        </span>
-      </Tip>
-    );
-  }
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label={`Status: ${label}`}
-            className="gap-1.5 text-[12.5px]"
-          />
-        }
-      >
-        <StatusGlyph status={status} />
-        {label}
-        <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} className="size-3 opacity-60" />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="min-w-44">
-        {!thread.task && (
-          <DropdownMenuGroup>
-            <DropdownMenuLabel>Make it a task</DropdownMenuLabel>
-          </DropdownMenuGroup>
-        )}
-        <MoveItems thread={thread} />
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 
@@ -702,89 +678,6 @@ function TaskBrief({ thread }: { thread: Thread }) {
         </ol>
       </div>
     </div>
-  );
-}
-
-const JOB_ICON: Record<BackgroundJob["kind"], typeof ZapIcon> = {
-  command: CommandLineIcon,
-  subagent: UserMultiple02Icon,
-  monitor: Clock01Icon,
-  other: ZapIcon,
-};
-
-const JOB_STATUS: Record<BackgroundJob["status"], string> = {
-  running: "Running",
-  completed: "Done",
-  failed: "Failed",
-  stopped: "Stopped",
-};
-
-function JobsButton({ threadId, jobs }: { threadId: string; jobs: BackgroundJob[] }) {
-  const [open, setOpen] = useState(false);
-  const running = jobs.filter((job) => job.status === "running").length;
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="sm"
-            className={cn("gap-1.5 text-muted-foreground", running > 0 && "text-foreground")}
-          />
-        }
-      >
-        {running > 0 ? (
-          <Spinner className="size-3.5" />
-        ) : (
-          <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.8} />
-        )}
-        {running > 0 ? `${running} running` : `${jobs.length} background`}
-      </PopoverTrigger>
-      <PopoverContent side="bottom" align="end" sideOffset={6} className="w-80 gap-1 p-1.5">
-        <p className="px-2 pt-1 pb-1.5 text-xs font-medium text-muted-foreground">
-          Background work
-        </p>
-        <ul className="flex max-h-80 flex-col gap-px overflow-y-auto">
-          {jobs.map((job) => (
-            <li
-              key={job.id}
-              className="flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-muted"
-            >
-              <HugeiconsIcon
-                icon={JOB_ICON[job.kind]}
-                strokeWidth={1.8}
-                className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
-              />
-              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="truncate text-[13px]">{job.title}</span>
-                <span
-                  className={cn(
-                    "text-xs text-muted-foreground",
-                    job.status === "failed" && "text-destructive",
-                  )}
-                >
-                  {JOB_STATUS[job.status]}
-                  {job.endedAt !== undefined && ` · ${duration(job.endedAt - job.startedAt)}`}
-                  {job.summary && ` · ${job.summary}`}
-                </span>
-              </div>
-              {job.status === "running" && (
-                <Tip label="Stop">
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={`Stop ${job.title}`}
-                    onClick={() => stopJob(threadId, job.id)}
-                  >
-                    <HugeiconsIcon icon={StopCircleIcon} strokeWidth={1.8} />
-                  </Button>
-                </Tip>
-              )}
-            </li>
-          ))}
-        </ul>
-      </PopoverContent>
-    </Popover>
   );
 }
 

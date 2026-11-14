@@ -6,6 +6,7 @@ import type {
   NoticeItem,
   QuestionItem,
   ReasoningItem,
+  TodoEntry,
   ToolItem,
   TurnEndItem,
   UserItem,
@@ -13,6 +14,18 @@ import type {
 } from "@dodocode/protocol";
 
 export type Step = ReasoningItem | ToolItem;
+
+/**
+ * The agent's plan as it last wrote it: each to-do list replaces the one before. Unset while it
+ * wrote none.
+ */
+export function latestTodos(items: readonly Item[]): TodoEntry[] | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item?.type === "tool" && item.todos?.length) return item.todos;
+  }
+  return undefined;
+}
 
 /** What the thread shows, in order: messages, and the agent's steps between them. */
 export type Block =
@@ -115,40 +128,68 @@ export interface DiffLine {
   kind: DiffLineKind;
   /** The line without its leading `+`, `-` or space. A hunk keeps its `@@` header. */
   text: string;
+  /** Its number in the file before the change, on a removed or unchanged line. A hunk's first. */
+  before?: number;
+  /** Its number in the file after the change, on an added or unchanged line. A hunk's first. */
+  after?: number;
 }
 
+const HUNK_START = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+
 /**
- * Reads a unified diff into lines. File headers (`---`, `+++`, `diff`, `index`) are dropped,
- * since the change already names its file.
+ * Reads a unified diff into lines, numbered as its hunk headers say. File headers (`---`, `+++`,
+ * `diff`, `index`) are dropped, since the change already names its file.
  */
 export function diffLines(diff: string): { lines: DiffLine[]; added: number; removed: number } {
   const lines: DiffLine[] = [];
   let added = 0;
   let removed = 0;
   let inHunk = false;
+  // Unknown until a hunk header says where its lines are.
+  let before: number | undefined;
+  let after: number | undefined;
   for (const raw of diff.replace(/\n$/, "").split("\n")) {
     if (raw.startsWith("@@")) {
       inHunk = true;
-      lines.push({ kind: "hunk", text: raw });
+      const start = HUNK_START.exec(raw);
+      before = start ? Number(start[1]) : undefined;
+      after = start ? Number(start[2]) : undefined;
+      lines.push({ kind: "hunk", text: raw, ...numbered(before, after) });
       continue;
     }
     // A new file's headers. Inside a hunk, `--- x` is a removed line that starts with `--`.
     if (raw.startsWith("diff ")) {
       inHunk = false;
+      before = after = undefined;
       continue;
     }
     if (!inHunk && FILE_HEADER.test(raw)) continue;
     const mark = raw[0];
     if (mark === "+") {
       added += 1;
-      lines.push({ kind: "added", text: raw.slice(1) });
+      lines.push({ kind: "added", text: raw.slice(1), ...numbered(undefined, after) });
+      if (after !== undefined) after += 1;
     } else if (mark === "-") {
       removed += 1;
-      lines.push({ kind: "removed", text: raw.slice(1) });
+      lines.push({ kind: "removed", text: raw.slice(1), ...numbered(before, undefined) });
+      if (before !== undefined) before += 1;
     } else if (mark !== "\\") {
       // `\ No newline at end of file` says nothing worth a line.
-      lines.push({ kind: "context", text: mark === " " ? raw.slice(1) : raw });
+      lines.push({
+        kind: "context",
+        text: mark === " " ? raw.slice(1) : raw,
+        ...numbered(before, after),
+      });
+      if (before !== undefined) before += 1;
+      if (after !== undefined) after += 1;
     }
   }
   return { lines, added, removed };
+}
+
+function numbered(before: number | undefined, after: number | undefined) {
+  return {
+    ...(before === undefined ? {} : { before }),
+    ...(after === undefined ? {} : { after }),
+  };
 }

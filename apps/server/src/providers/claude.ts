@@ -39,6 +39,7 @@ import type {
   ProviderSession,
   SessionHost,
   SubagentWriter,
+  TextRequest,
   TurnMessage,
 } from "./types";
 
@@ -224,7 +225,56 @@ export class ClaudeProvider implements Provider {
   createSession(host: SessionHost): ProviderSession {
     return new ClaudeSession(host, this.executable);
   }
+
+  async writeText(request: TextRequest, signal: AbortSignal): Promise<unknown> {
+    const abort = new AbortController();
+    const stop = () => abort.abort();
+    signal.addEventListener("abort", stop, { once: true });
+    const query = startQuery({
+      prompt: request.prompt,
+      options: {
+        cwd: homedir(),
+        abortController: abort,
+        model: TEXT_MODEL,
+        effort: "low",
+        thinking: { type: "disabled" },
+        systemPrompt: "You write short text for an app. Answer only with what the schema asks for.",
+        tools: [],
+        allowedTools: [],
+        mcpServers: {},
+        strictMcpConfig: true,
+        persistSession: false,
+        // The person's own settings say how Claude reaches its model; their project's don't matter.
+        settingSources: ["user"],
+        // Their hooks are for their own sessions, not for the app's small requests.
+        settings: { disableAllHooks: true },
+        outputFormat: { type: "json_schema", schema: request.schema },
+        env: {
+          ...agentEnv(),
+          ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+          CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
+        },
+        ...(this.executable ? { pathToClaudeCodeExecutable: this.executable } : {}),
+      },
+    });
+    try {
+      for await (const message of query) {
+        if (message.type !== "result") continue;
+        if (message.subtype !== "success") {
+          throw new Error(`Claude could not answer (${message.subtype}).`);
+        }
+        return message.structured_output ?? message.result;
+      }
+      throw new Error("Claude stopped without answering.");
+    } finally {
+      signal.removeEventListener("abort", stop);
+      query.close();
+    }
+  }
 }
+
+/** The model the app's own small requests use: the quickest one. */
+const TEXT_MODEL = "haiku";
 
 interface SessionTurn {
   /** Started by a message from the person, rather than by Claude on its own. */

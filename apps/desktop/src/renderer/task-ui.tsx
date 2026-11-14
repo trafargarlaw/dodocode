@@ -2,7 +2,7 @@
 // on the board and in the thread's header.
 
 import type { ReactNode } from "react";
-import { unstarted, type Thread } from "@dodocode/protocol";
+import { unstarted, type Thread, type ThreadStatus } from "@dodocode/protocol";
 import { Message01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DropdownMenuItem, DropdownMenuSeparator } from "@dodocode/ui/components/dropdown-menu";
@@ -108,20 +108,23 @@ function pie(share: number): string {
  */
 export function Attention({
   thread,
+  status = thread.status,
   idle,
   className,
 }: {
   thread: Thread;
+  /** What to show in place of the thread's own status, such as a subagent's. */
+  status?: ThreadStatus;
   idle?: ReactNode;
   /** The spinner's colour, where muted text is another colour. */
   className?: string;
 }) {
-  if (thread.status === "running") {
+  if (status === "running") {
     return (
       <Spinner aria-label="Running" className={cn("size-3.5 text-muted-foreground", className)} />
     );
   }
-  if (thread.status === "waiting") {
+  if (status === "waiting") {
     return (
       <span className="grid size-3.5 place-items-center">
         <span aria-hidden className="size-2 rounded-full bg-amber-500 ring-3 ring-amber-500/25" />
@@ -129,7 +132,7 @@ export function Attention({
       </span>
     );
   }
-  if (thread.status === "error") {
+  if (status === "error") {
     return (
       <span className="grid size-3.5 place-items-center">
         <span aria-hidden className="size-2 rounded-full bg-destructive" />

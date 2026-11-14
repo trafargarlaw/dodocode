@@ -2,6 +2,7 @@
 // requests carry a Codex thread id, which routes them to the dodocode thread they belong to.
 
 import { open } from "node:fs/promises";
+import { homedir } from "node:os";
 
 import type { ModelOption, Question, SlashCommand, ThreadSettings } from "@dodocode/protocol";
 
@@ -17,6 +18,7 @@ import type {
   ProviderSession,
   SessionHost,
   SubagentWriter,
+  TextRequest,
   TurnMessage,
 } from "./types";
 
@@ -101,6 +103,8 @@ export class CodexProvider implements Provider {
   readonly label = "Codex";
   private process: CodexProcess | undefined;
   private routes = new Map<string, Route>();
+  /** The models it listed when last checked. */
+  private models: ModelOption[] = [];
   readonly sessions = new CodexSessions(() => this.server());
 
   private executable(): string | undefined {
@@ -179,6 +183,7 @@ export class CodexProvider implements Provider {
         }
         cursor = page.nextCursor;
       } while (cursor);
+      this.models = models;
       const version = userAgent?.match(/\/(\S+)/)?.[1];
       if (account.requiresOpenaiAuth && !account.account) {
         return {
@@ -198,6 +203,76 @@ export class CodexProvider implements Provider {
   createSession(host: SessionHost): ProviderSession {
     return new CodexSession(this, host);
   }
+
+  async writeText(request: TextRequest, signal: AbortSignal): Promise<unknown> {
+    const server = await this.server();
+    const { model, effort } = textModel(this.models);
+    const started = (await server.request("thread/start", {
+      cwd: homedir(),
+      ephemeral: true,
+      model,
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      baseInstructions:
+        "You write short text for an app. Answer only with what the schema asks for.",
+      // The person's plugins and apps add tools, which a request for a bit of text has no use for.
+      config: { "features.plugins": false, "features.apps": false },
+    })) as { thread: { id: string } };
+    const threadId = started.thread.id;
+    try {
+      const answer = new Promise<string>((resolve, reject) => {
+        let text: string | undefined;
+        signal.addEventListener("abort", () => reject(new Error("Codex took too long.")), {
+          once: true,
+        });
+        this.addRoute(threadId, {
+          notification: (method, params) => {
+            if (method === "item/completed") {
+              const item = params.item as CodexItem;
+              if (item.type === "agentMessage") text = String(item.text ?? "");
+            } else if (method === "turn/completed") {
+              const turn = params.turn as { status: string; error?: { message?: string } | null };
+              if (turn.status === "completed" && text !== undefined) resolve(text);
+              else
+                reject(
+                  new Error(turn.error?.message ?? `Codex could not answer (${turn.status}).`),
+                );
+            }
+          },
+          request: (method) =>
+            Promise.reject(new RpcError(-32601, `dodocode does not allow ${method} here.`)),
+          exited: (reason) => reject(new Error(reason)),
+        });
+      });
+      await server.request("turn/start", {
+        threadId,
+        input: [{ type: "text", text: wellFormed(request.prompt), text_elements: [] }],
+        model,
+        effort,
+        outputSchema: request.schema,
+        approvalPolicy: "never",
+        sandboxPolicy: { type: "readOnly", networkAccess: false },
+      });
+      return await answer;
+    } finally {
+      this.removeRoute(threadId);
+      server.request("thread/unsubscribe", { threadId }).catch((error: unknown) => {
+        log("codex", "unsubscribe failed", errorText(error));
+      });
+    }
+  }
+}
+
+/**
+ * The model and effort the app's own small requests use: a small model when Codex lists one,
+ * thinking as little as it allows.
+ */
+export function textModel(models: ModelOption[]): { model: string | null; effort: string | null } {
+  const model = models.find((option) => /mini|nano/i.test(option.id)) ?? models[0];
+  if (!model) return { model: null, effort: null };
+  const effort =
+    ["low", "minimal"].find((level) => model.efforts.includes(level)) ?? model.efforts[0] ?? null;
+  return { model: model.id, effort };
 }
 
 /**

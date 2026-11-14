@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { Item } from "@dodocode/protocol";
-import { diffLines, toBlocks, type DiffLine } from "./blocks";
+import { diffLines, latestTodos, toBlocks, type DiffLine } from "./blocks";
 
 const base = { threadId: "t", turnId: "turn", seq: 1, createdAt: 0 };
 
@@ -14,6 +14,20 @@ const tool = (id: string): Item => ({
   input: {},
   output: "",
   status: "done",
+});
+
+/** A to-do list the agent wrote, with one entry. */
+const plan = (id: string, text: string): Item => ({
+  ...base,
+  id,
+  type: "tool",
+  kind: "todo",
+  name: "TodoWrite",
+  title: "Plan",
+  input: {},
+  output: "",
+  status: "done",
+  todos: [{ text, status: "pending" }],
 });
 
 test("toBlocks groups thinking and tool calls in a row into one block, keyed by the first", () => {
@@ -109,27 +123,48 @@ test("toBlocks keeps the blocks that show the same items as before, and makes th
   expect(stopped[0]).toBe(before[0]);
 });
 
+test("latestTodos takes the plan the agent wrote last, past a step without one", () => {
+  expect(latestTodos([plan("p1", "first"), plan("p2", "second"), tool("t1")])).toEqual([
+    { text: "second", status: "pending" },
+  ]);
+  expect(latestTodos([tool("t1")])).toBeUndefined();
+});
+
 describe("diffLines", () => {
   test.each<[string, string, DiffLine[], number, number]>([
     [
       "drops the file headers",
       "diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n",
       [
-        { kind: "hunk", text: "@@ -1,2 +1,2 @@" },
-        { kind: "context", text: "keep" },
-        { kind: "removed", text: "old" },
-        { kind: "added", text: "new" },
+        { kind: "hunk", text: "@@ -1,2 +1,2 @@", before: 1, after: 1 },
+        { kind: "context", text: "keep", before: 1, after: 1 },
+        { kind: "removed", text: "old", before: 2 },
+        { kind: "added", text: "new", after: 2 },
       ],
       1,
+      1,
+    ],
+    [
+      "numbers lines from where the hunk starts, on each side",
+      "@@ -10,3 +12,4 @@ function run()\n a\n-b\n+c\n+d\n e",
+      [
+        { kind: "hunk", text: "@@ -10,3 +12,4 @@ function run()", before: 10, after: 12 },
+        { kind: "context", text: "a", before: 10, after: 12 },
+        { kind: "removed", text: "b", before: 11 },
+        { kind: "added", text: "c", after: 13 },
+        { kind: "added", text: "d", after: 14 },
+        { kind: "context", text: "e", before: 12, after: 15 },
+      ],
+      2,
       1,
     ],
     [
       "reads lines that look like headers inside a hunk as changes",
       "@@ -1 +1 @@\n--- a\n+++ b",
       [
-        { kind: "hunk", text: "@@ -1 +1 @@" },
-        { kind: "removed", text: "-- a" },
-        { kind: "added", text: "++ b" },
+        { kind: "hunk", text: "@@ -1 +1 @@", before: 1, after: 1 },
+        { kind: "removed", text: "-- a", before: 1 },
+        { kind: "added", text: "++ b", after: 1 },
       ],
       1,
       1,
@@ -138,21 +173,31 @@ describe("diffLines", () => {
       "drops the missing-newline marker",
       "@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b",
       [
-        { kind: "hunk", text: "@@ -1 +1 @@" },
-        { kind: "removed", text: "a" },
-        { kind: "added", text: "b" },
+        { kind: "hunk", text: "@@ -1 +1 @@", before: 1, after: 1 },
+        { kind: "removed", text: "a", before: 1 },
+        { kind: "added", text: "b", after: 1 },
       ],
       1,
       1,
     ],
     [
-      "drops the headers of a second file",
+      "drops the headers of a second file, and numbers it afresh",
       "--- a/x\n+++ b/x\n@@ -1 +1 @@\n+x\ndiff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +0,0 @@\n-y",
       [
-        { kind: "hunk", text: "@@ -1 +1 @@" },
-        { kind: "added", text: "x" },
-        { kind: "hunk", text: "@@ -1 +0,0 @@" },
-        { kind: "removed", text: "y" },
+        { kind: "hunk", text: "@@ -1 +1 @@", before: 1, after: 1 },
+        { kind: "added", text: "x", after: 1 },
+        { kind: "hunk", text: "@@ -1 +0,0 @@", before: 1, after: 0 },
+        { kind: "removed", text: "y", before: 1 },
+      ],
+      1,
+      1,
+    ],
+    [
+      "leaves lines unnumbered when there is no hunk header",
+      "+a\n-b",
+      [
+        { kind: "added", text: "a" },
+        { kind: "removed", text: "b" },
       ],
       1,
       1,
