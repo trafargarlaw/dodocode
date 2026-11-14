@@ -630,7 +630,10 @@ export class App implements ThreadContext {
     }
   }
 
-  /** What a task's work is compared with: where its branch left the base, or its last commit. */
+  /**
+   * What a task's work is compared with: where its branch left the base, as its details count
+   * it, or its last commit when there's no telling.
+   */
   private async reviewBase(
     task: Thread,
     project: Project,
@@ -639,6 +642,14 @@ export class App implements ThreadContext {
     if (worktree) {
       const base = await startOf(worktree.path, worktree.base ?? worktree.from);
       return { folder: worktree.path, base, label: worktree.base ?? `commit ${base.slice(0, 7)}` };
+    }
+    // What the details count as changed: against the branch the work merges into, or since the
+    // commit checked out as it began, so work it committed is reviewed too.
+    const changes = await this.changesWhere(task.id);
+    if (changes.folder && changes.base) {
+      const base = await startOf(changes.folder, changes.base);
+      const label = changes.against ?? `commit ${base.slice(0, 7)}`;
+      return { folder: changes.folder, base, label };
     }
     const repo = await repoOf(project.path);
     if (!repo) throw new Error(`${project.name} isn't in git, so there's no telling what changed.`);
