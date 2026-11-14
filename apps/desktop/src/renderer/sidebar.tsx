@@ -1,7 +1,14 @@
-import { useRef, useState, type ComponentProps, type ReactNode, type RefObject } from "react";
+import {
+  useRef,
+  useState,
+  type ComponentProps,
+  type CSSProperties,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { useAppHotkeys } from "@tanstack/react-hotkeys";
 import { useLiveQuery } from "@tanstack/react-db";
-import type { Project, Thread, ThreadStatus } from "@dodocode/protocol";
+import type { Project, PullRequest, Thread, ThreadStatus } from "@dodocode/protocol";
 import {
   Add01Icon,
   Archive02Icon,
@@ -12,6 +19,7 @@ import {
   FilterIcon,
   Folder01Icon,
   FolderAddIcon,
+  GitBranchIcon,
   KanbanIcon,
   MoreHorizontalIcon,
   PencilEdit01Icon,
@@ -72,6 +80,8 @@ import {
   type SidebarGroup,
 } from "./task-list";
 import { Attention, MoveItems, StatusGlyph } from "./task-ui";
+import { prLook } from "./thread/side-panel";
+import { Counts, ownRepo } from "./thread/workspace";
 import { ago, useNow } from "./time";
 import { openBoard, openDraft, openThread, useView } from "./view";
 
@@ -100,6 +110,7 @@ export function Sidebar({ onNewThread }: { onNewThread: () => void }) {
   const collapsed = useCollapsedGroups();
   const [expanded, setExpanded] = useState<ReadonlySet<GroupId>>(new Set());
   const filterButton = useRef<HTMLButtonElement>(null);
+  const projectById = new Map(projectList.map((project) => [project.id, project]));
 
   const groups = sidebarGroups(threadList, {
     openId,
@@ -135,6 +146,7 @@ export function Sidebar({ onNewThread }: { onNewThread: () => void }) {
     onExpand: (on: boolean) => expand(group.id, on),
     openId,
     openTopId,
+    projectOf: projectById,
     now,
   });
 
@@ -480,6 +492,7 @@ interface GroupRowsProps {
   openId: string | undefined;
   /** The top thread the open thread belongs to: itself, or the one whose subagent is open. */
   openTopId: string | undefined;
+  projectOf: ReadonlyMap<string, Project>;
   now: number;
 }
 
@@ -521,6 +534,7 @@ function GroupRows({
   onExpand,
   openId,
   openTopId,
+  projectOf,
   now,
 }: GroupRowsProps) {
   // A folded group still shows the open thread, so the list never loses where you are.
@@ -532,6 +546,7 @@ function GroupRows({
           key={thread.id}
           thread={thread}
           status={status}
+          project={thread.projectId ? projectOf.get(thread.projectId) : undefined}
           open={thread.id === openId ? "page" : thread.id === openTopId ? "within" : undefined}
           now={now}
         />
@@ -551,7 +566,7 @@ function MoreButton({ onClick, children }: { onClick: () => void; children: Reac
     <button
       type="button"
       onClick={onClick}
-      className="h-6.5 rounded-[7px] pl-7.5 text-left text-[12px] text-sidebar-muted-foreground transition-colors outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+      className="h-6.5 rounded-[7px] pl-2.5 text-left text-[12px] text-sidebar-muted-foreground transition-colors outline-none hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring"
     >
       {children}
     </button>
@@ -559,18 +574,20 @@ function MoreButton({ onClick, children }: { onClick: () => void; children: Reac
 }
 
 /**
- * One thread, on one line: what needs the person or runs, the title, and how long since anything
- * happened. The rest of what there is to know about it is in its details, beside it once open.
+ * One thread, as a small card: where it works and how it stands, its title, then its branch and
+ * what it changed. The rest is in its details, beside it once open.
  */
 function ThreadRow({
   thread,
   status,
+  project,
   open,
   now,
 }: {
   thread: Thread;
   /** What its mark shows: its own status, or a subagent's. */
   status: ThreadStatus;
+  project: Project | undefined;
   /** `page`: the thread is open. `within`: one of its subagents or reviews is. */
   open: "page" | "within" | undefined;
   now: number;
@@ -578,6 +595,14 @@ function ThreadRow({
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const settleable = thread.task !== undefined && thread.task.status !== "done";
+  const where = project?.name ?? (thread.origin ? folderName(thread.origin.cwd) : "No project");
+  const repo = project ? ownRepo(thread, project) : undefined;
+  const branch =
+    thread.worktree?.branch ??
+    repo?.branch ??
+    (thread.origin ? thread.origin.checkout?.branch : project?.git?.branch);
+  const changed = thread.worktree?.mergedAt === undefined ? thread.worktree?.changed : undefined;
+  const pr = repo?.pr;
 
   if (renaming) {
     return (
@@ -599,37 +624,45 @@ function ThreadRow({
         onClick={() => openThread(thread.id)}
         onDoubleClick={() => setRenaming(true)}
         className={cn(
-          "flex h-7.5 w-full items-center gap-2 rounded-[7px] pr-2 pl-7.5 text-left whitespace-nowrap transition-colors outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring",
-          open && "bg-sidebar-selected hover:bg-sidebar-selected",
+          "flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left transition-colors outline-none hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+          open &&
+            "bg-sidebar-selected shadow-xs ring-1 ring-sidebar-border hover:bg-sidebar-selected",
         )}
       >
-        {/* In the row's left margin, so the title stays put. */}
-        <span className="-ml-5.5 grid size-3.5 shrink-0 place-items-center">
-          <Attention
-            thread={thread}
-            status={status}
-            className="text-sidebar-muted-foreground"
-            idle={
-              thread.pinned ? (
-                <HugeiconsIcon
-                  icon={PinIcon}
-                  strokeWidth={1.8}
-                  aria-label="Pinned"
-                  className="size-3 text-sidebar-muted-foreground"
-                />
-              ) : null
-            }
-          />
+        <span className="flex h-4.5 min-w-0 items-center gap-1.5 text-[12px] text-sidebar-muted-foreground">
+          <ProjectMark name={where} />
+          <span className="min-w-0 truncate">{where}</span>
+          {thread.archived && <span className="shrink-0">· Archived</span>}
+          <span className="ml-auto flex shrink-0 items-center gap-1 pl-1 text-[11.5px] tabular-nums group-focus-within/thread:invisible group-hover/thread:invisible group-has-data-popup-open/thread:invisible">
+            <RowState thread={thread} status={status} now={now} />
+          </span>
         </span>
-        <span className="min-w-0 flex-1 truncate">
+        <span className="truncate text-[13px] leading-5 font-medium text-sidebar-foreground">
           {thread.title}
-          {thread.archived && <span className="text-sidebar-muted-foreground"> · Archived</span>}
         </span>
-        <span className="shrink-0 text-[11.5px] text-sidebar-muted-foreground tabular-nums group-focus-within/thread:invisible group-hover/thread:invisible group-has-data-popup-open/thread:invisible">
-          {ago(thread.activityAt, now)}
-        </span>
+        {(branch || pr || changed) && (
+          <span className="flex h-4.5 min-w-0 items-center gap-1.5 text-[11.5px] text-sidebar-muted-foreground">
+            {branch && (
+              <>
+                <HugeiconsIcon
+                  icon={GitBranchIcon}
+                  strokeWidth={1.8}
+                  aria-hidden
+                  className="size-3.25 shrink-0"
+                />
+                <span className="min-w-0 truncate">{branch}</span>
+              </>
+            )}
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              {pr && <PrMark pr={pr} />}
+              {changed && changed.files > 0 && (
+                <Counts added={changed.added} removed={changed.removed} />
+              )}
+            </span>
+          </span>
+        )}
       </button>
-      <div className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center opacity-0 transition-opacity group-focus-within/thread:opacity-100 group-hover/thread:opacity-100 has-data-popup-open:opacity-100">
+      <div className="absolute top-1.5 right-1.5 flex items-center opacity-0 transition-opacity group-focus-within/thread:opacity-100 group-hover/thread:opacity-100 has-data-popup-open:opacity-100">
         {settleable && (
           <Tip label="Mark done" side="right">
             <RowButton
@@ -706,6 +739,67 @@ function ThreadRow({
   );
 }
 
+/** How the thread stands, at the right of its card: at work, waiting, stopped, or how long since. */
+function RowState({ thread, status, now }: { thread: Thread; status: ThreadStatus; now: number }) {
+  const mark = <Attention thread={thread} status={status} className="size-3 text-current" />;
+  if (status === "running") {
+    return (
+      <span className="flex items-center gap-1 text-sky-700 dark:text-sky-400">{mark}Working</span>
+    );
+  }
+  if (status === "waiting") {
+    return (
+      <span className="flex items-center gap-1 text-amber-700 dark:text-amber-400">
+        {mark}Needs you
+      </span>
+    );
+  }
+  if (status === "error") {
+    return <span className="flex items-center gap-1 text-destructive">{mark}Error</span>;
+  }
+  return (
+    <>
+      {thread.pinned && (
+        <HugeiconsIcon icon={PinIcon} strokeWidth={1.8} aria-label="Pinned" className="size-3" />
+      )}
+      {ago(thread.activityAt, now)}
+    </>
+  );
+}
+
+/** The project's first letter on a tint of its own, so projects tell apart at a glance. */
+function ProjectMark({ name }: { name: string }) {
+  let hue = 0;
+  for (const char of name) hue = (hue * 31 + char.charCodeAt(0)) % 360;
+  return (
+    <span
+      aria-hidden
+      style={{ "--hue": hue } as CSSProperties}
+      className="grid size-4 shrink-0 place-items-center rounded-[4px] bg-[oklch(0.62_0.14_var(--hue)/0.16)] text-[9.5px] leading-none font-bold text-[oklch(0.45_0.14_var(--hue))] uppercase dark:text-[oklch(0.8_0.12_var(--hue))]"
+    >
+      {name.trim().charAt(0) || "?"}
+    </span>
+  );
+}
+
+/** A branch's pull request, small: its mark in the colour of where it stands, and its number. */
+function PrMark({ pr }: { pr: PullRequest }) {
+  const look = prLook(pr);
+  return (
+    <span
+      className={cn("flex items-center gap-0.5", look.className)}
+      title={`${look.label} pull request: ${pr.title}`}
+    >
+      <HugeiconsIcon icon={look.icon} strokeWidth={1.8} aria-hidden className="size-3.25" />
+      <span className="tabular-nums">#{pr.number}</span>
+    </span>
+  );
+}
+
+function folderName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 function RenameField({
   title,
   onDone,
@@ -725,7 +819,7 @@ function RenameField({
         if (event.key === "Enter") onDone(event.currentTarget.value.trim());
         if (event.key === "Escape") onDone(undefined);
       }}
-      className="h-7.5 w-full rounded-[7px] bg-background pr-2 pl-7.5 text-foreground ring-2 ring-sidebar-ring outline-none"
+      className="h-7.5 w-full rounded-[7px] bg-background px-2.5 text-foreground ring-2 ring-sidebar-ring outline-none"
     />
   );
 }
