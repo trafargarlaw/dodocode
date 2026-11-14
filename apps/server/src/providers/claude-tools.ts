@@ -49,6 +49,7 @@ export function describeTool(
   );
   switch (name) {
     case "Bash":
+    case "PowerShell":
       return { kind: "command", title: firstLine(text(input.command)) || "Run a command" };
     case "BashOutput":
     case "TaskOutput":

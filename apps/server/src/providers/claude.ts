@@ -25,6 +25,7 @@ import type {
   Question,
   SlashCommand,
   ThreadSettings,
+  ToolKind,
 } from "@dodocode/protocol";
 
 import { AsyncQueue, errorText, log, newId, within } from "../util";
@@ -298,6 +299,8 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
   private subagentWriters = new Map<string, SubagentWriter>();
   /** Tool calls by task, for background tasks. */
   private taskTools = new Map<string, string>();
+  /** Each task's type, as it started, for a task moved to the background later. */
+  private taskTypes = new Map<string, string>();
   /** Permission rules the person allowed for this thread, kept across processes. */
   private allowedRules = new Set<string>();
   private allowedTools = new Set<string>();
@@ -696,6 +699,7 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
     const toolId = event.tool_use_id as string | undefined;
     const taskType = (event.task_type as string | undefined) ?? "";
     if (toolId) this.taskTools.set(taskId, toolId);
+    this.taskTypes.set(taskId, taskType);
     if (!event.is_backgrounded) return;
     this.backgroundTask(taskId, toolId, taskType, event.description as string | undefined);
   }
@@ -707,14 +711,15 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
     description: string | undefined,
   ): void {
     const tool = toolId ? this.findTool(toolId) : undefined;
+    // The tool call says best what runs: a shell's task type isn't always local_bash.
     const kind =
-      taskType === "local_bash"
-        ? tool?.name === "Monitor"
-          ? "monitor"
-          : "command"
-        : /agent|teammate|workflow/.test(taskType)
-          ? "subagent"
-          : "other";
+      tool?.name === "Monitor"
+        ? "monitor"
+        : tool?.kind === "command" || taskType === "local_bash"
+          ? "command"
+          : tool?.kind === "subagent" || /agent|teammate|workflow/.test(taskType)
+            ? "subagent"
+            : "other";
     this.host.jobStarted({
       id: taskId,
       kind,
@@ -730,13 +735,15 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
     const taskId = event.task_id as string;
     const patch = (event.patch ?? {}) as { is_backgrounded?: boolean; description?: string };
     if (patch.is_backgrounded) {
-      this.backgroundTask(taskId, this.taskTools.get(taskId), "local_agent", patch.description);
+      const taskType = this.taskTypes.get(taskId) ?? "";
+      this.backgroundTask(taskId, this.taskTools.get(taskId), taskType, patch.description);
     }
   }
 
   private taskEnded(event: Record<string, unknown>): void {
     const taskId = event.task_id as string;
     const toolId = (event.tool_use_id as string | undefined) ?? this.taskTools.get(taskId);
+    this.taskTypes.delete(taskId);
     const status = event.status as "completed" | "failed" | "stopped";
     const summary = (event.summary as string | undefined) || undefined;
     this.host.jobEnded(taskId, { status, summary });
@@ -753,7 +760,7 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
     this.subagentWriters.get(toolId)?.finish(status, summary);
   }
 
-  private findTool(toolId: string): { name: string; title: string } | undefined {
+  private findTool(toolId: string): { kind: ToolKind; name: string; title: string } | undefined {
     const tool = this.writerFor(toolId)?.get(toolId);
     return tool?.type === "tool" ? tool : undefined;
   }
