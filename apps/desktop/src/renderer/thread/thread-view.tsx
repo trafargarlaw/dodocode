@@ -4,6 +4,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent,
   type ReactNode,
   type Ref,
@@ -66,12 +67,17 @@ import { StatusGlyph } from "../task-ui";
 import { openBoard, openRelated, useView } from "../view";
 import { latestTodos, toBlocks, type Block } from "./blocks";
 import { clearDraft, Composer, readyDraft } from "./composer";
-import { DetailsButton, DetailsCard } from "./details";
+import { DetailsButton, DetailsCard, useDetailsRoom } from "./details";
 import { ImageGallery, Images } from "./image-view";
 import { BlockView, Working } from "./messages";
 import { ReviewerAccess } from "./pickers";
 import { SidePanel, useSidePanel } from "./side-panel";
 import { changesToShow, MergeButton, workPlace, workspaceSlots } from "./workspace";
+
+/** The room the conversation leaves on its right for the details, set where it's measured. */
+const DETAILS_ROOM = "--details-room";
+/** Leaves that room inside an element's padding, beside its scrollbar's place, not past it. */
+const ROOM_RIGHT = "pr-(--details-room)";
 
 export function ThreadView({
   threadId,
@@ -130,6 +136,10 @@ export function ThreadView({
   const panelShows = !!thread && !!project && changesToShow(workPlace(thread, project));
   useHotkey(hotkeys["panel.toggle"], togglePanel, { enabled: panelShows });
   useHotkey(hotkeys["panel.full"], toggleFull, { enabled: panelShows });
+  // The conversation leaves room on its right for the details, inside its scroller, so the
+  // scrollbar stays at the edge.
+  const [conversation, setConversation] = useState<HTMLDivElement | null>(null);
+  const detailsRoom = useDetailsRoom(conversation);
 
   // The app's list loads first, and the window leaves a thread that is gone.
   if (!thread) return null;
@@ -162,13 +172,17 @@ export function ThreadView({
         />
         <div ref={measure} className="relative flex min-h-0">
           <div
+            ref={setConversation}
             inert={hidden}
+            style={{ [DETAILS_ROOM]: `${detailsRoom}px` } as CSSProperties}
             className={cn(
               "relative grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto]",
               hidden && "invisible",
             )}
           >
             <DetailsCard
+              // Over the transcript, never the composer.
+              className="col-start-1 row-start-1"
               thread={thread}
               project={project}
               todos={latestTodos(itemList)}
@@ -189,57 +203,59 @@ export function ThreadView({
             ) : (
               <Transcript key={threadId} thread={thread} items={itemList} />
             )}
-            <div className="mx-auto w-full max-w-3xl px-5 pb-4">
-              {thread.kind === "subagent" ? (
-                <SubagentNote thread={thread} />
-              ) : (
-                <>
-                  {queue.length > 0 && (
-                    <QueueList threadId={threadId} queue={queue} running={running} />
-                  )}
-                  {fresh ? (
-                    <Composer
-                      draftKey={threadId}
-                      projectId={thread.projectId}
-                      settings={thread.settings}
-                      onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
-                      running={false}
-                      placeholder="Add anything else the agent should know, then start"
-                      sendLabel="Start"
-                      allowEmpty
-                      {...slots}
-                      onSend={(message) =>
-                        startTask(
-                          thread,
-                          message.text || message.images.length > 0 ? message : undefined,
-                        )
-                      }
-                      inputRef={inputRef}
-                    />
-                  ) : (
-                    <Composer
-                      draftKey={threadId}
-                      projectId={thread.projectId}
-                      context={thread.context}
-                      settings={thread.settings}
-                      onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
-                      running={running}
-                      placeholder={
-                        running ? "Add to what the agent is doing" : "Reply to the agent"
-                      }
-                      onSend={(message, mode) => sendMessage(threadId, message, mode)}
-                      onStop={() => interrupt(threadId)}
-                      inputRef={inputRef}
-                      {...slots}
-                      access={
-                        thread.kind === "review" ? (
-                          <ReviewerAccess provider={thread.settings.provider} />
-                        ) : undefined
-                      }
-                    />
-                  )}
-                </>
-              )}
+            <div className={ROOM_RIGHT}>
+              <div className="mx-auto w-full max-w-3xl px-5 pb-4">
+                {thread.kind === "subagent" ? (
+                  <SubagentNote thread={thread} />
+                ) : (
+                  <>
+                    {queue.length > 0 && (
+                      <QueueList threadId={threadId} queue={queue} running={running} />
+                    )}
+                    {fresh ? (
+                      <Composer
+                        draftKey={threadId}
+                        projectId={thread.projectId}
+                        settings={thread.settings}
+                        onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
+                        running={false}
+                        placeholder="Add anything else the agent should know, then start"
+                        sendLabel="Start"
+                        allowEmpty
+                        {...slots}
+                        onSend={(message) =>
+                          startTask(
+                            thread,
+                            message.text || message.images.length > 0 ? message : undefined,
+                          )
+                        }
+                        inputRef={inputRef}
+                      />
+                    ) : (
+                      <Composer
+                        draftKey={threadId}
+                        projectId={thread.projectId}
+                        context={thread.context}
+                        settings={thread.settings}
+                        onSettingsChange={(settings) => changeThreadSettings(threadId, settings)}
+                        running={running}
+                        placeholder={
+                          running ? "Add to what the agent is doing" : "Reply to the agent"
+                        }
+                        onSend={(message, mode) => sendMessage(threadId, message, mode)}
+                        onStop={() => interrupt(threadId)}
+                        inputRef={inputRef}
+                        {...slots}
+                        access={
+                          thread.kind === "review" ? (
+                            <ReviewerAccess provider={thread.settings.provider} />
+                          ) : undefined
+                        }
+                      />
+                    )}
+                  </>
+                )}
+              </div>
             </div>
           </div>
           {panelOpen && over && !full && (
@@ -410,7 +426,7 @@ function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
       <MessageScroller>
         <MessageScrollerViewport
           ref={olderViewport}
-          className={cn(folds.unanchored && "[overflow-anchor:none]")}
+          className={cn(ROOM_RIGHT, folds.unanchored && "[overflow-anchor:none]")}
           onClickCapture={folds.onClickCapture}
           onScroll={(event) => {
             folds.onScroll();
@@ -671,7 +687,7 @@ function ReviewButton({ thread }: { thread: Thread }) {
 function TaskBrief({ thread }: { thread: Thread }) {
   const covers = thread.task?.covers ?? [];
   return (
-    <div className="min-h-0 overflow-y-auto">
+    <div className={cn("min-h-0 overflow-y-auto", ROOM_RIGHT)}>
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-6 pt-8 pb-6">
         <p className="text-[12.5px] text-muted-foreground">
           {thread.task?.status === "backlog"

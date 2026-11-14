@@ -1,9 +1,15 @@
-// A thread's details, in a card over the conversation's corner: where it works and what that
-// changed, where it stands, the agent's plan, and the subagents, reviews and background work it
-// started. The header's button shows and hides it, and it stays until hidden, from thread to
-// thread.
+// A thread's details, in a card in the conversation's top corner, which the conversation makes
+// room for, or which lies over it when the conversation has too little room: where it works and what that changed, where it stands, the
+// agent's plan, and the subagents, reviews and background work it started. The header's button
+// shows and hides it, and it stays until hidden, from thread to thread.
 
-import { useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useLayoutEffect,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { useAppHotkeys, useHotkey } from "@tanstack/react-hotkeys";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import {
@@ -160,18 +166,50 @@ interface DetailsProps {
   onShowChanges: () => void;
 }
 
+/** The card's width. */
+const CARD_WIDTH = 320;
+/** The card's distance from the right edge. */
+const CARD_EDGE = 12;
+/** The width the conversation keeps beside the card; narrower, the card lies over it. */
+const CONVERSATION_MIN = 560;
+
 /**
- * The details, in the top corner of what holds them, while they're shown. Clicking elsewhere
- * leaves them; Escape from inside hides them.
+ * The room the conversation leaves on its right for the card, in pixels: none while the card is
+ * hidden, or when the conversation would be left too narrow and the card lies over it instead.
+ * Give it the element that holds the conversation and the card.
  */
-export function DetailsCard(props: DetailsProps) {
+export function useDetailsRoom(element: HTMLElement | null): number {
+  const shownNow = useDetailsShown();
+  const [wide, setWide] = useState(false);
+  useLayoutEffect(() => {
+    if (!element) return;
+    const measure = () =>
+      setWide(element.getBoundingClientRect().width >= CARD_WIDTH + CARD_EDGE + CONVERSATION_MIN);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [element]);
+  return shownNow && wide ? CARD_WIDTH + CARD_EDGE : 0;
+}
+
+/**
+ * The details, while they're shown, in a card in the top corner of what holds them. The
+ * conversation makes room for it with useDetailsRoom while it can, and it lies over the
+ * conversation when it can't. Escape from inside hides them.
+ */
+export function DetailsCard({ className, ...props }: DetailsProps & { className?: string }) {
   if (!useDetailsShown()) return null;
   return (
     // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- Escape hides it
     <section
       aria-label="Details"
       onKeyDown={hideOnEscape}
-      className="absolute top-2 right-3 z-10 flex max-h-[calc(100%-1rem)] w-[min(20rem,calc(100%-1.5rem))] origin-top-right animate-in flex-col overflow-y-auto rounded-lg bg-popover p-1 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 fade-in-0 zoom-in-95"
+      style={{ right: CARD_EDGE, width: `min(${CARD_WIDTH}px, calc(100% - ${2 * CARD_EDGE}px))` }}
+      className={cn(
+        "absolute top-2 z-10 flex max-h-[calc(100%-1rem)] origin-top-right animate-in flex-col overflow-y-auto rounded-lg bg-popover p-1 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 fade-in-0 zoom-in-95",
+        className,
+      )}
     >
       <Details {...props} />
     </section>
