@@ -4,7 +4,8 @@
 import { useSyncExternalStore } from "react";
 
 export type View =
-  | { kind: "thread"; threadId: string }
+  /** A thread. Opened from the board, its header leads back there. */
+  | { kind: "thread"; threadId: string; from?: "board" }
   /** A new thread, in the project picked for it: `null` for none, unset for the usual one. */
   | { kind: "draft"; projectId?: string | null }
   | { kind: "board" };
@@ -14,7 +15,12 @@ const KEY = "dodocode:view";
 function load(): View {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) ?? "null") as View | null;
-    if (saved?.kind === "thread" && typeof saved.threadId === "string") return saved;
+    if (saved?.kind === "thread" && typeof saved.threadId === "string") {
+      const { threadId } = saved;
+      return saved.from === "board"
+        ? { kind: "thread", threadId, from: "board" }
+        : { kind: "thread", threadId };
+    }
     if (saved?.kind === "draft") return { kind: "draft", projectId: saved.projectId };
     if (saved?.kind === "board") return saved;
   } catch {
@@ -48,9 +54,18 @@ function set(view: View, choose = false): void {
   notify();
 }
 
-export function openThread(threadId: string): void {
-  if (current.kind === "thread" && current.threadId === threadId) return;
-  set({ kind: "thread", threadId });
+/** Opens a thread. `from` the board, its header has a way back there. */
+export function openThread(threadId: string, from?: "board"): void {
+  if (current.kind === "thread" && current.threadId === threadId && current.from === from) return;
+  set(from ? { kind: "thread", threadId, from } : { kind: "thread", threadId });
+}
+
+/**
+ * Opens a thread of the same work, such as a task's review or one of its subagents, keeping the
+ * way back to where the open thread was opened from.
+ */
+export function openRelated(threadId: string): void {
+  openThread(threadId, current.kind === "thread" ? current.from : undefined);
 }
 
 /**

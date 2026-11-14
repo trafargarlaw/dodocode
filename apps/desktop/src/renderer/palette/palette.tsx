@@ -37,19 +37,21 @@ function set(next: PaletteState): void {
   for (const listener of Array.from(listeners)) listener();
 }
 
+const FIRST_PAGE: Record<"search" | "add-project", PalettePage> = {
+  search: { kind: "search" },
+  "add-project": { kind: "sources" },
+};
+
 /**
- * Opens the palette on search, or on the ways to add a project. `onAdded` gets the project it
- * adds; without it, a new thread opens in that project.
+ * Opens the palette on search, or on the ways to add a project, which include importing a
+ * conversation from another app. `onAdded` gets the project it adds; without it, a new thread
+ * opens in that project.
  */
 export function openPalette(
   start: "search" | "add-project",
   options: { onAdded?: (project: Project) => void } = {},
 ): void {
-  set({
-    open: true,
-    stack: [start === "search" ? { kind: "search" } : { kind: "sources" }],
-    onAdded: options.onAdded,
-  });
+  set({ open: true, stack: [FIRST_PAGE[start]], onAdded: options.onAdded });
 }
 
 export function closePalette(): void {

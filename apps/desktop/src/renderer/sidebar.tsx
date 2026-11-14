@@ -19,7 +19,6 @@ import {
   PinIcon,
   PinOffIcon,
   Tick02Icon,
-  VisualStudioCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -48,6 +47,7 @@ import {
   DropdownMenuTrigger,
 } from "@dodocode/ui/components/dropdown-menu";
 import { cn } from "@dodocode/ui/lib/utils";
+import { VisualStudioCodeLogo } from "./brand-icons";
 import { HeldKeys, Tip } from "./keys";
 import { openPalette } from "./palette/palette";
 import { setListFilter, useListFilter } from "./list-filter";
@@ -383,7 +383,7 @@ function ActiveFilters({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="min-w-52">
                   <DropdownMenuItem onClick={() => openInEditor(project.id)}>
-                    <HugeiconsIcon icon={VisualStudioCodeIcon} strokeWidth={1.8} />
+                    <VisualStudioCodeLogo className="size-3.5" />
                     Open in VS Code
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />

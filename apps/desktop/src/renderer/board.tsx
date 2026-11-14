@@ -152,7 +152,7 @@ export function BoardView() {
         : first;
     if (!merged) return;
     setSelected(new Set());
-    if (start && (await startTask(merged))) openThread(merged.id);
+    if (start && (await startTask(merged))) openThread(merged.id, "board");
   };
 
   return (
@@ -430,7 +430,7 @@ function Card({
         type="button"
         onClick={(event) => {
           if (fresh && (selecting || event.shiftKey || event.metaKey || event.ctrlKey)) onToggle();
-          else openThread(card.id);
+          else openThread(card.id, "board");
         }}
         className="flex w-full flex-col gap-1.5 rounded-lg px-2.5 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
@@ -596,7 +596,7 @@ function ReviewItems({ card, review }: { card: Thread; review: Thread | undefine
         </DropdownMenuItem>
       )}
       {review && (
-        <DropdownMenuItem onClick={() => openThread(review.id)}>
+        <DropdownMenuItem onClick={() => openThread(review.id, "board")}>
           {running ? <Spinner /> : <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.8} />}
           {running ? "Open the running review" : "Open the review"}
         </DropdownMenuItem>

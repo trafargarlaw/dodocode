@@ -247,13 +247,13 @@ export function BringPage({ nav, session }: { nav: PaletteNav; session: OutsideS
           openThread(thread.id);
         } else {
           toast.add({
-            title: `Brought in ${thread.title}`,
+            title: `Imported ${thread.title}`,
             description: "It's in your threads now.",
           });
         }
       },
       (failed: unknown) => {
-        if (!alive.current) return reportError("Could not bring the conversation in", failed);
+        if (!alive.current) return reportError("Could not import the conversation", failed);
         setBusy(false);
         setFailure(errorText(failed));
         return undefined;
@@ -278,12 +278,12 @@ export function BringPage({ nav, session }: { nav: PaletteNav; session: OutsideS
         onBack={nav.back}
         action={
           <HeaderAction hotkey="Enter" disabled={!ready} busy={busy} onClick={bring}>
-            {busy ? "Bringing in…" : gone ? "Bring in its history" : "Bring it in"}
+            {busy ? "Importing…" : gone ? "Import its history" : "Import"}
           </HeaderAction>
         }
       >
         <span className="min-w-0 flex-1 truncate px-1 text-[14px] text-foreground">
-          Bring in a conversation
+          Import conversation
         </span>
       </PaletteHeader>
       <div
@@ -362,7 +362,7 @@ export function BringPage({ nav, session }: { nav: PaletteNav; session: OutsideS
       </div>
       <PaletteFooter>
         {!gone && <KeyHint keys={["ArrowUp", "ArrowDown"]}>Choose</KeyHint>}
-        <KeyHint keys={["Enter"]}>Bring it in</KeyHint>
+        <KeyHint keys={["Enter"]}>Import</KeyHint>
         <KeyHint keys={["Backspace"]}>Back</KeyHint>
         <KeyHint keys={["Escape"]}>Close</KeyHint>
       </PaletteFooter>

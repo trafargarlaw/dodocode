@@ -14,7 +14,6 @@ import {
   KanbanIcon,
   PencilEdit02Icon,
   UserMultiple02Icon,
-  VisualStudioCodeIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -25,6 +24,7 @@ import {
   CommandList,
   CommandShortcut,
 } from "@dodocode/ui/components/command";
+import { VisualStudioCodeLogo } from "../brand-icons";
 import { Keys } from "../keys";
 import { searchScore } from "../search-match";
 import { openInEditor, projects, threads } from "../server/app-data";
@@ -135,15 +135,15 @@ export function SearchPage({
             </CommandShortcut>
           </CommandItem>
           <CommandItem
-            value="action:bring-in"
+            value="action:import"
             keywords={[
-              "Bring in a conversation",
+              "Import conversation",
+              "bring in",
               // As the group of matches below is called, so its name finds the way to all of them.
               "From other apps",
               "conversations",
               "sessions",
               "threads",
-              "import",
               "history",
               "resume",
               "continue",
@@ -156,7 +156,7 @@ export function SearchPage({
             onSelect={() => nav.push({ kind: "sessions" })}
           >
             <HugeiconsIcon icon={BubbleChatDownload01Icon} strokeWidth={1.8} />
-            Bring in a conversation
+            Import conversation
             <CommandShortcut>
               <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} className="size-3.5" />
             </CommandShortcut>
@@ -167,7 +167,7 @@ export function SearchPage({
               keywords={["Open in VS Code", "editor", "code", currentProject.name]}
               onSelect={run(() => openInEditor(currentProject.id))}
             >
-              <HugeiconsIcon icon={VisualStudioCodeIcon} strokeWidth={1.8} />
+              <VisualStudioCodeLogo className="size-3.5" />
               Open {currentProject.name} in VS Code
             </CommandItem>
           )}

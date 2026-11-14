@@ -10,6 +10,7 @@ import {
   disputesWaiting,
   type BackgroundJob,
   type Project,
+  type PullRequest,
   type Thread,
   type ThreadStatus,
   type TodoEntry,
@@ -32,7 +33,6 @@ import {
   StopCircleIcon,
   Tick02Icon,
   UserMultiple02Icon,
-  VisualStudioCodeIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -47,6 +47,7 @@ import {
 import { Separator } from "@dodocode/ui/components/separator";
 import { Spinner } from "@dodocode/ui/components/spinner";
 import { cn } from "@dodocode/ui/lib/utils";
+import { VisualStudioCodeLogo } from "../brand-icons";
 import { Tip } from "../keys";
 import { folderName } from "../palette/sessions";
 import { openFolder, openThreadInEditor, threads } from "../server/app-data";
@@ -54,20 +55,29 @@ import { stopJob } from "../server/thread-data";
 import { GROUP_LABEL } from "../task-list";
 import { Attention, MoveItems, StatusGlyph } from "../task-ui";
 import { ago, duration, useNow } from "../time";
-import { openThread } from "../view";
+import { openRelated } from "../view";
 import { useChangeCount } from "./change-count";
 import { TodoList } from "./steps";
-import { branchLabel, changesToShow, Counts, workPlace, type WorkPlace } from "./workspace";
+import { prLook } from "./side-panel";
+import {
+  branchLabel,
+  changesToShow,
+  Counts,
+  ownRepo,
+  workPlace,
+  type WorkPlace,
+} from "./workspace";
 
 // Shown or hidden
 
 const SHOWN_KEY = "dodocode.details";
 
+/** Shown unless hidden: a new person sees where the work is and what it changed at once. */
 function loadShown(): boolean {
   try {
-    return localStorage.getItem(SHOWN_KEY) === "shown";
+    return localStorage.getItem(SHOWN_KEY) !== "hidden";
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -373,6 +383,7 @@ function WorkspaceRows({
   const place = workPlace(thread, project);
   const where = whereItWorks(place, mode, project);
   const folder = where.folder;
+  const pr = ownRepo(thread, project)?.pr;
   return (
     <>
       <div className={ROW}>
@@ -395,7 +406,9 @@ function WorkspaceRows({
         )}
       </div>
       <button type="button" className={ACTION} onClick={() => openThreadInEditor(thread.id)}>
-        <RowIcon icon={VisualStudioCodeIcon} />
+        <span className="flex size-4 shrink-0 items-center justify-center">
+          <VisualStudioCodeLogo className="size-3.5" />
+        </span>
         Open in VS Code
       </button>
       {place && (
@@ -420,7 +433,10 @@ function WorkspaceRows({
               )}
             </span>
           </div>
-          {changesToShow(place) && <ChangesRow thread={thread} onClick={onShowChanges} />}
+          {pr && place.kind !== "merged" && <PullRequestRow pr={pr} />}
+          {changesToShow(place) && (
+            <ChangesRow thread={thread} against={pr?.base} onClick={onShowChanges} />
+          )}
         </>
       )}
       <Separator className="my-1" />
@@ -432,18 +448,49 @@ function BranchName({ children }: { children: ReactNode }) {
   return <span className="font-mono text-[12px]">{children}</span>;
 }
 
-/** How much the work changed, read before it's asked for. It opens the whole of it. */
-function ChangesRow({ thread, onClick }: { thread: Thread; onClick: () => void }) {
+/** The pull request of the branch the thread works on, which opens on GitHub. */
+function PullRequestRow({ pr }: { pr: PullRequest }) {
+  const look = prLook(pr);
+  return (
+    <Tip label="Open on GitHub">
+      <a href={pr.url} target="_blank" rel="noreferrer" className={ACTION}>
+        <HugeiconsIcon
+          icon={look.icon}
+          strokeWidth={1.8}
+          className={cn("size-4", look.className)}
+        />
+        <span className="min-w-0 flex-1 truncate">
+          <span className="tabular-nums">#{pr.number}</span>{" "}
+          <span className="text-muted-foreground">{pr.title}</span>
+        </span>
+        <span className={cn("shrink-0 text-[12px] font-medium", look.className)}>{look.label}</span>
+      </a>
+    </Tip>
+  );
+}
+
+/**
+ * How much the work changed, read before it's asked for. It opens the whole of it. Against the
+ * branch it merges into, when that's known; otherwise since the work started.
+ */
+function ChangesRow({
+  thread,
+  against,
+  onClick,
+}: {
+  thread: Thread;
+  /** The branch the pull request merges into. */
+  against: string | undefined;
+  onClick: () => void;
+}) {
   const count = useChangeCount(thread.id, thread.activityAt) ?? thread.worktree?.changed;
   const worktree = thread.worktree;
+  const base = worktree ? (worktree.base ?? "where it started") : against;
   return (
     <button type="button" className={ACTION} onClick={onClick}>
       <RowIcon icon={GitCompareIcon} />
       <span className="min-w-0 flex-1 truncate">
-        Changes{" "}
-        <span className="text-muted-foreground">
-          {worktree ? `vs ${worktree.base ?? "where it started"}` : "not committed"}
-        </span>
+        Changes {base && <span className="text-muted-foreground">vs {base}</span>}
       </span>
       {!count ? (
         <Spinner className="size-3.5 text-muted-foreground" />
@@ -571,7 +618,7 @@ function ParentRow({
     );
   }
   return (
-    <button type="button" className={ACTION} onClick={() => openThread(parent.id)}>
+    <button type="button" className={ACTION} onClick={() => openRelated(parent.id)}>
       <RowIcon icon={icon} />
       <span className="shrink-0 text-muted-foreground">{lead}</span>
       <span className="min-w-0 flex-1 truncate">{parent.title}</span>
@@ -597,7 +644,7 @@ function ChildRow({
 }) {
   const now = useNow();
   return (
-    <button type="button" className={ACTION} onClick={() => openThread(thread.id)}>
+    <button type="button" className={ACTION} onClick={() => openRelated(thread.id)}>
       <span className="grid size-4 shrink-0 place-items-center text-muted-foreground [&_svg]:size-3.5">
         <Attention thread={thread} idle={idle} />
       </span>

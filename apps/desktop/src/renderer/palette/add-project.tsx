@@ -22,6 +22,7 @@ import {
 } from "@dodocode/protocol";
 import {
   Alert02Icon,
+  BubbleChatDownload01Icon,
   Folder01Icon,
   FolderAddIcon,
   FolderGit2Icon,
@@ -157,6 +158,38 @@ export function SourcesPage({ nav }: { nav: PaletteNav }) {
               </span>
             </CommandItem>
           ))}
+          {/* A conversation from another app comes with its project, adding it when it's new. Not
+              among the sources a search lists, which has this as an action of its own. */}
+          <CommandItem
+            value="source:import"
+            keywords={[
+              "Import conversation",
+              IMPORT_DESCRIPTION,
+              "bring in",
+              "session",
+              "chat",
+              "history",
+              "resume",
+              "continue",
+              "Claude Code",
+              "Codex",
+              "T3 Code",
+            ]}
+            onSelect={() => nav.push({ kind: "sessions" })}
+            className="items-start gap-3 py-2"
+          >
+            <HugeiconsIcon
+              icon={BubbleChatDownload01Icon}
+              strokeWidth={1.8}
+              className="mt-0.5 size-4"
+            />
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-[13.5px] leading-tight text-foreground">
+                Import conversation
+              </span>
+              <span className="text-xs text-muted-foreground">{IMPORT_DESCRIPTION}</span>
+            </span>
+          </CommandItem>
         </CommandGroup>
       </CommandList>
       <PaletteFooter>
@@ -168,6 +201,8 @@ export function SourcesPage({ nav }: { nav: PaletteNav }) {
     </Command>
   );
 }
+
+const IMPORT_DESCRIPTION = "Carry on a conversation from Claude Code, Codex or another app";
 
 // Folders
 

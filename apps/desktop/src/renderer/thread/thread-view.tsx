@@ -63,7 +63,7 @@ import {
 } from "../server/thread-data";
 import { GROUP_LABEL, reviewable } from "../task-list";
 import { StatusGlyph } from "../task-ui";
-import { openThread } from "../view";
+import { openBoard, openRelated, useView } from "../view";
 import { latestTodos, toBlocks, type Block } from "./blocks";
 import { clearDraft, Composer, readyDraft } from "./composer";
 import { DetailsButton, DetailsCard } from "./details";
@@ -85,9 +85,11 @@ export function ThreadView({
     measure,
     open: panelKeptOpen,
     over,
+    full,
     toggle: togglePanel,
     show: showPanel,
     close: closePanel,
+    toggleFull,
   } = useSidePanel();
   const data = threadData(threadId);
   const { data: thread } = useLiveQuery({
@@ -127,6 +129,7 @@ export function ThreadView({
   // The panel shows what the work changed, so it has nothing to show before the work starts.
   const panelShows = !!thread && !!project && changesToShow(workPlace(thread, project));
   useHotkey(hotkeys["panel.toggle"], togglePanel, { enabled: panelShows });
+  useHotkey(hotkeys["panel.full"], toggleFull, { enabled: panelShows });
 
   // The app's list loads first, and the window leaves a thread that is gone.
   if (!thread) return null;
@@ -144,6 +147,9 @@ export function ThreadView({
     onShowChanges: showPanel,
   });
   const panelOpen = panelShows && panelKeptOpen;
+  // The panel over the whole page keeps the conversation as it was behind it, hidden, so it
+  // comes back where it was left.
+  const hidden = panelOpen && full;
 
   return (
     <ImageGallery>
@@ -155,7 +161,13 @@ export function ThreadView({
           panel={panelShows ? { open: panelOpen, toggle: togglePanel } : undefined}
         />
         <div ref={measure} className="relative flex min-h-0">
-          <div className="relative grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto]">
+          <div
+            inert={hidden}
+            className={cn(
+              "relative grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto]",
+              hidden && "invisible",
+            )}
+          >
             <DetailsCard
               thread={thread}
               project={project}
@@ -230,7 +242,7 @@ export function ThreadView({
               )}
             </div>
           </div>
-          {panelOpen && over && (
+          {panelOpen && over && !full && (
             <button
               type="button"
               tabIndex={-1}
@@ -240,7 +252,14 @@ export function ThreadView({
             />
           )}
           {panelOpen && project && (
-            <SidePanel thread={thread} project={project} over={over} onClose={closePanel} />
+            <SidePanel
+              thread={thread}
+              project={project}
+              over={over}
+              full={full}
+              onClose={closePanel}
+              onToggleFull={toggleFull}
+            />
           )}
         </div>
       </div>
@@ -449,19 +468,37 @@ function ThreadHeader({
   panel: { open: boolean; toggle: () => void } | undefined;
 }) {
   const hotkeys = useAppHotkeys();
+  const view = useView();
+  const fromBoard = view.kind === "thread" && view.from === "board";
   const parentId = thread.parentId;
   const back = thread.kind === "review" ? "Back to the task" : "Back to the thread that started it";
   const panelLabel = panel?.open ? "Hide the panel" : "Show what changed, in a panel";
 
   return (
     <header className="flex h-11 min-w-0 items-center gap-2 border-b px-4">
+      {fromBoard && (
+        <>
+          <Tip label="Back to the board" hotkey={hotkeys["board.open"]}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="-ml-2 shrink-0 gap-1 text-muted-foreground"
+              onClick={openBoard}
+            >
+              <HugeiconsIcon icon={ArrowLeft01Icon} strokeWidth={2} />
+              Board
+            </Button>
+          </Tip>
+          <span aria-hidden className="h-4 w-px shrink-0 bg-border" />
+        </>
+      )}
       {parentId && (
         <Tip label={back}>
           <Button
             variant="ghost"
             size="icon-sm"
             aria-label={back}
-            onClick={() => openThread(parentId)}
+            onClick={() => openRelated(parentId)}
           >
             <HugeiconsIcon icon={ArrowLeft01Icon} strokeWidth={2} />
           </Button>
@@ -591,7 +628,12 @@ function ReviewButton({ thread }: { thread: Thread }) {
   if (latest && (latest.status === "running" || latest.status === "waiting")) {
     return (
       <Tip label="Open the review">
-        <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => openThread(latest.id)}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-1.5"
+          onClick={() => openRelated(latest.id)}
+        >
           <Spinner className="size-3.5" />
           Reviewing
         </Button>
@@ -603,7 +645,7 @@ function ReviewButton({ thread }: { thread: Thread }) {
     setStarting(true);
     const review = await startReview(thread);
     setStarting(false);
-    if (review) openThread(review.id);
+    if (review) openRelated(review.id);
   };
   return (
     <Tip label="A fresh agent reviews the work, and what it finds goes to this task's agent">
@@ -741,7 +783,7 @@ function SubagentNote({ thread }: { thread: Thread }) {
       <HugeiconsIcon icon={UserMultiple02Icon} strokeWidth={1.8} className="size-4 shrink-0" />
       <span className="flex-1">A subagent did this work. Its thread takes no messages.</span>
       {parentId && (
-        <Button variant="outline" size="xs" onClick={() => openThread(parentId)}>
+        <Button variant="outline" size="xs" onClick={() => openRelated(parentId)}>
           Go to the main thread
         </Button>
       )}

@@ -234,6 +234,73 @@ export async function startOf(folder: string, base: string | undefined): Promise
   return head.code === 0 && head.stdout.trim() ? head.stdout.trim() : EMPTY_TREE;
 }
 
+/**
+ * The branch work in a repository usually merges into: the remote's default branch, else a main
+ * or master of the remote's or its own. `ref` is what to compare with: the remote's, when it has
+ * one, as a pull request is.
+ */
+export async function defaultBranch(
+  root: string,
+): Promise<{ name: string; ref: string } | undefined> {
+  const remote = await run(root, [
+    "symbolic-ref",
+    "--quiet",
+    "--short",
+    "refs/remotes/origin/HEAD",
+  ]);
+  const head = remote.stdout.trim();
+  if (remote.code === 0 && head.startsWith("origin/")) {
+    return { name: head.slice("origin/".length), ref: head };
+  }
+  // A repository pushed rather than cloned has no origin/HEAD.
+  const order = [
+    "refs/remotes/origin/main",
+    "refs/remotes/origin/master",
+    "refs/heads/main",
+    "refs/heads/master",
+  ];
+  const out = await run(root, ["for-each-ref", "--format=%(refname)", ...order]);
+  const have = new Set(out.stdout.split(/\r?\n/));
+  const ref = order.find((name) => have.has(name));
+  if (!ref) return undefined;
+  const short = ref.replace(/^refs\/(remotes|heads)\//, "");
+  return { name: short.replace(/^origin\//, ""), ref: short };
+}
+
+/** What to compare with for a branch by name: the remote's, else its own, or nothing. */
+export async function branchRef(root: string, name: string): Promise<string | undefined> {
+  const order = [`refs/remotes/origin/${name}`, `refs/heads/${name}`];
+  const out = await run(root, ["for-each-ref", "--format=%(refname)", ...order]);
+  const have = new Set(out.stdout.split(/\r?\n/));
+  const ref = order.find((each) => have.has(each));
+  return ref?.replace(/^refs\/(remotes|heads)\//, "");
+}
+
+/** The commit HEAD's own line had at `time`: the newest made by then. */
+export async function commitAt(root: string, time: number): Promise<string | undefined> {
+  const at = new Date(time).toISOString().replace(/\.\d+Z$/, "Z");
+  const out = await run(root, ["rev-list", "-1", "--first-parent", `--before=${at}`, "HEAD"]);
+  return (out.code === 0 && out.stdout.trim()) || undefined;
+}
+
+/** Whether a repository has a remote on GitHub, so GitHub can be asked about its branches. */
+export async function onGitHub(root: string): Promise<boolean> {
+  const out = await run(root, ["config", "--get-regexp", String.raw`^remote\..*\.url$`]);
+  return /github\.com[:/]/i.test(out.stdout);
+}
+
+/** The most files `listFiles` gives back. */
+const FILES_LIMIT = 50_000;
+
+/** The files in a checkout: those git tracks, and new ones it doesn't ignore. */
+export async function listFiles(root: string): Promise<{ paths: string[]; truncated: boolean }> {
+  const out = await git(root, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]);
+  // A file deleted but not yet committed is still in the index; a merge lists a file once a side.
+  const paths = [...new Set(out.split("\0").filter(Boolean))];
+  const truncated = paths.length > FILES_LIMIT;
+  return { paths: truncated ? paths.slice(0, FILES_LIMIT) : paths, truncated };
+}
+
 /** Files git doesn't track yet, and doesn't ignore. */
 async function newFiles(folder: string): Promise<string[]> {
   const out = await git(folder, ["ls-files", "--others", "--exclude-standard", "-z"]);

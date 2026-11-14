@@ -4,7 +4,7 @@
 // What it changed shows in full in the panel beside the conversation.
 
 import { useState, type ReactNode } from "react";
-import type { Project, Thread, WorkspaceMode, Worktree } from "@dodocode/protocol";
+import type { Project, Thread, WorkRepo, WorkspaceMode, Worktree } from "@dodocode/protocol";
 import { ComputerIcon, GitBranchIcon, GitForkIcon, GitMergeIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@dodocode/ui/components/button";
@@ -146,8 +146,22 @@ export function changesToShow(place: WorkPlace | undefined): boolean {
 /** The branch a started thread works on, as the person knows it. */
 export function branchLabel(thread: Thread, project: Project): string {
   if (thread.worktree) return thread.worktree.branch;
+  return ownRepo(thread, project)?.branch ?? fallbackBranch(thread, project) ?? "Detached HEAD";
+}
+
+/**
+ * The repository the thread works in, as the server last read it. The server lists it first,
+ * when its folder is in one: a checkout another app worked in, or the project's.
+ */
+export function ownRepo(thread: Thread, project: Project): WorkRepo | undefined {
+  const inRepo = thread.origin ? thread.origin.checkout && !thread.origin.folderGone : project.git;
+  return inRepo ? thread.repos?.[0] : undefined;
+}
+
+/** The branch as it was known before the server read the repository. */
+function fallbackBranch(thread: Thread, project: Project): string | undefined {
   const checkout = thread.origin?.checkout;
-  return (checkout ? checkout.branch : project.git?.branch) ?? "Detached HEAD";
+  return checkout ? checkout.branch : project.git?.branch;
 }
 
 /**
@@ -243,13 +257,14 @@ function WorkspaceChip({
 }) {
   const label = branchLabel(thread, project);
   const changed = useChangeCount(thread.id, thread.activityAt) ?? thread.worktree?.changed;
+  const pr = ownRepo(thread, project)?.pr;
   return (
     <Tip
       side="top"
       label={
-        thread.worktree
-          ? `On ${thread.worktree.branch}. See what changed`
-          : `On ${label}. See what isn't committed`
+        pr
+          ? `On ${label}, #${pr.number}: ${pr.title}. See what changed`
+          : `On ${label}. See what changed`
       }
     >
       <Button
@@ -261,6 +276,7 @@ function WorkspaceChip({
       >
         <HugeiconsIcon icon={GitBranchIcon} strokeWidth={1.8} />
         <span className="truncate font-mono text-[11.5px]">{label}</span>
+        {pr && <span className="shrink-0 text-[11.5px] tabular-nums">#{pr.number}</span>}
         {changed && changed.files > 0 && <Counts added={changed.added} removed={changed.removed} />}
       </Button>
     </Tip>

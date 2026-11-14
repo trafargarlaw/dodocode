@@ -108,6 +108,36 @@ export interface Worktree {
   mergedAt?: number;
 }
 
+/** A pull request on GitHub, as last read. */
+export interface PullRequest {
+  number: number;
+  title: string;
+  url: string;
+  state: "open" | "closed" | "merged";
+  /** Set while it is a draft. */
+  draft?: boolean;
+  /** The branch it merges into. */
+  base: string;
+}
+
+/**
+ * A repository a thread's work is in: the one it works in, and any other its agent, or one of
+ * its subagents, changed files in. The server keeps each one's branch and pull request current.
+ */
+export interface WorkRepo {
+  /** The checkout's top folder. */
+  root: string;
+  /** The branch checked out there, as last read. Unset for a detached HEAD. */
+  branch?: string;
+  /**
+   * The commit checked out there as the thread began working in it. On the branch work merges
+   * into, the thread's changes are what came after it.
+   */
+  from?: string;
+  /** The pull request of its branch, when GitHub has one. */
+  pr?: PullRequest;
+}
+
 /** How much changed: files, and lines added and removed. */
 export interface ChangeCount {
   files: number;
@@ -246,6 +276,11 @@ export interface Thread {
   review?: Review;
   /** Set on a thread brought in from a conversation started in another app. */
   origin?: ThreadOrigin;
+  /**
+   * The repositories its work is in, the one it works in first. Unset until its first message;
+   * empty when it works in none.
+   */
+  repos?: WorkRepo[];
 }
 
 /** Where a thread brought in from another app was started, and how it carries on. */

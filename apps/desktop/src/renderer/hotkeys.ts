@@ -35,6 +35,11 @@ export const appHotkeys = defineAppHotkeys({
     meta: { name: "Show or hide the panel beside the thread", group: "Window" },
     options: { requireReset: true },
   },
+  "panel.full": {
+    hotkey: "Mod+Alt+F",
+    meta: { name: "Let the panel take the whole page, or give it back", group: "Window" },
+    options: { requireReset: true },
+  },
   "appearance.toggle": {
     hotkey: "Mod+Shift+L",
     meta: { name: "Switch between light and dark", group: "Window" },

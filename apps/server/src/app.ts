@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import type { FSWatcher } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { addedPrompt, disputesWaiting, folderNameProblem } from "@dodocode/protocol";
@@ -33,6 +34,7 @@ import type {
   ThreadOrigin,
   ThreadSettings,
   ToolItem,
+  WorkRepo,
   WorkspaceMode,
   Worktree,
 } from "@dodocode/protocol";
@@ -40,21 +42,28 @@ import type {
 import {
   addWorktree,
   branchName,
+  branchRef,
   branches,
   changesIn,
   cloneRepo,
   commitAll,
+  commitAt,
   countChanges,
+  defaultBranch,
   deleteBranch,
   hasChanges,
   initRepo,
+  listFiles,
   mainCheckout,
   mergeBranch,
+  onGitHub,
   removeWorktree,
+  type Repo,
   repoOf,
   restoreWorktree,
   startOf,
 } from "./git";
+import { pullRequestOf } from "./github";
 import { expandPath, listFolders } from "./folders";
 import { History } from "./history";
 import { ClaudeProvider } from "./providers/claude";
@@ -117,6 +126,8 @@ const WRITE_TEXT_TIMEOUT_MS = 60_000;
 const REVIEW_IMAGES = 8;
 /** The most of a project's own way to review a reviewer is sent. */
 const REVIEW_METHOD_LIMIT = 40_000;
+/** How long GitHub's answer about a branch's pull request is taken as current. */
+const PR_FRESH_MS = 60_000;
 
 export class App implements ThreadContext {
   readonly store: Store;
@@ -149,6 +160,10 @@ export class App implements ThreadContext {
   private found = new Map<string, OutsideSession>();
   /** Conversations being brought in, so two asks at once bring in one thread. */
   private bringing = new Map<string, Promise<Thread>>();
+  /** Each thread's last read of its repositories, so reads one after another don't overlap. */
+  private readingRepos = new Map<string, Promise<void>>();
+  /** When GitHub was last asked about a branch's pull request, by repository and branch. */
+  private prAsked = new Map<string, number>();
   /** Set when the app stops. It then starts no more work of its own. */
   private stopped = false;
   /** Work the app started on its own, such as reading git, which stopping waits for. */
@@ -247,9 +262,16 @@ export class App implements ThreadContext {
     if (item?.type === "tool" && item.kind === "edit" && item.status === "done") {
       this.filesChanged(item);
     }
+    // The commit checked out as the first message goes in is where the thread's work starts.
+    if (item?.type === "user") {
+      const thread = this.threads.get(item.threadId);
+      const root = thread && this.rootOf(thread);
+      if (root && !root.repos) this.inBackground(() => this.followRepos(root.id));
+    }
     if (item?.type === "turn_end") {
       this.inBackground(() => this.countWork(item.threadId));
       this.inBackground(() => this.followCheckout(item.threadId));
+      this.inBackground(() => this.followRepos(item.threadId));
       // After the turn has ended, so what this writes comes after it.
       const status = item.status;
       setImmediate(() => this.inBackground(() => this.reviewEnded(item.threadId, status)));
@@ -268,6 +290,7 @@ export class App implements ThreadContext {
       root = this.threads.get(root.parentId);
     }
     if (!root) return;
+    this.followEdits(root, [edit]);
     const runtime = this.runtime(root.id);
     const now = Date.now();
     const back = reopened(runtime.thread, now);
@@ -286,13 +309,28 @@ export class App implements ThreadContext {
    * the agent's own memory, is no part of the work. An edit that names no file counts.
    */
   private editsWork(root: Thread, edit: ToolItem): boolean {
-    const paths = (edit.changes ?? []).flatMap((change) =>
-      change.movedTo ? [change.path, change.movedTo] : [change.path],
-    );
+    const paths = editedPaths(edit);
     if (!paths.length) return true;
     const folder = this.workDir(root);
     // Providers name a file in the folder from it, and one outside it in full.
     return paths.some((path) => holds(folder, resolve(folder, path)));
+  }
+
+  /**
+   * Starts following the repositories that edits changed files in, outside the ones the thread
+   * knows: work can span several at once. Files in the folder it works in are in its own.
+   */
+  private followEdits(root: Thread, edits: readonly ToolItem[]): void {
+    const folder = this.workDir(root);
+    const repos = root.repos ?? [];
+    const outside = edits
+      .flatMap(editedPaths)
+      .map((path) => resolve(folder, path))
+      .filter(
+        (path) =>
+          !holds(folder, path) && !repos.some((repo) => holds(repo.root, path)) && !agentsOwn(path),
+      );
+    if (outside.length > 0) this.inBackground(() => this.followRepos(root.id, outside));
   }
 
   /**
@@ -805,7 +843,7 @@ export class App implements ThreadContext {
     const origin = this.rootOf(thread).origin;
     if (origin?.folderGone) {
       throw new Error(
-        "The folder this conversation worked in was gone when it was brought in, so it can't carry on here. To carry it on, delete this thread and bring the conversation in again.",
+        "The folder this conversation worked in was gone when it was imported, so it can't carry on here. To carry it on, delete this thread and import the conversation again.",
       );
     }
     if (origin && !existsSync(origin.cwd)) {
@@ -884,32 +922,177 @@ export class App implements ThreadContext {
     runtime.replace({ ...runtime.thread, origin: { ...origin, checkout } });
   }
 
+  // The repositories a thread's work is in
+
   /**
-   * Where a thread's changes are read, and from what: a worktree from the branch it came from,
-   * else the folder the thread works in from its last commit. No folder when no repository holds
-   * it, or the worktree is gone. `against` names the branch, for work in a worktree.
+   * Reads again the repositories a thread's work is in: the one it works in, those it knew, and
+   * those holding `paths`, files its agent changed outside them. Each one's branch is read again,
+   * and, now and then, its pull request. Reads for a thread go one after another.
+   */
+  private followRepos(threadId: string, paths: readonly string[] = []): Promise<void> {
+    const before = this.readingRepos.get(threadId) ?? Promise.resolve();
+    const read = before
+      .catch(() => undefined)
+      .then(() => this.readRepos(threadId, paths))
+      .finally(() => {
+        if (this.readingRepos.get(threadId) === read) this.readingRepos.delete(threadId);
+      });
+    this.readingRepos.set(threadId, read);
+    return read;
+  }
+
+  private async readRepos(threadId: string, paths: readonly string[]): Promise<void> {
+    const thread = this.threads.get(threadId);
+    if (!thread) return;
+    const root = this.rootOf(thread);
+    // Merged, its work is on the branch it came from, and its record stays as it was.
+    if (root.worktree?.mergedAt !== undefined) return;
+    const before = root.repos ?? [];
+    const repos: WorkRepo[] = [];
+    const holding = (path: string) => repos.some((repo) => holds(repo.root, path));
+    const take = async (repo: Repo | undefined, main: boolean) => {
+      if (!repo || repos.some((each) => samePath(each.root, repo.root))) return;
+      repos.push(await this.repoRecord(root, repo, main));
+    };
+
+    const main = this.mainFolder(root);
+    await take(main ? await repoOf(main).catch(() => undefined) : undefined, true);
+    for (const was of before) {
+      if (holding(was.root)) continue;
+      // A repository whose folder went is no part of the work any more.
+      if (existsSync(was.root)) await take(await repoOf(was.root).catch(() => undefined), false);
+    }
+    for (const path of paths) {
+      if (holding(path)) continue;
+      const folder = nearestFolder(path);
+      if (folder) await take(await repoOf(folder).catch(() => undefined), false);
+    }
+
+    await Promise.all(repos.map((_repo, index) => this.readPullRequest(repos, index)));
+    // The thread may have gone while git was read.
+    if (!this.threads.has(root.id)) return;
+    const runtime = this.runtime(root.id);
+    if (JSON.stringify(runtime.thread.repos) === JSON.stringify(repos)) return;
+    runtime.replace({ ...runtime.thread, repos });
+  }
+
+  /** The folder a thread's work is in: its worktree's top, the other app's folder, its project's. */
+  private mainFolder(root: Thread): string | undefined {
+    const worktree = root.worktree;
+    if (worktree && worktree.mergedAt === undefined) return worktree.path;
+    if (root.origin) return root.origin.folderGone ? undefined : root.origin.cwd;
+    return root.projectId ? this.projects.get(root.projectId)?.path : undefined;
+  }
+
+  /** A repository as the thread knows it, with its branch as read now. */
+  private async repoRecord(root: Thread, repo: Repo, main: boolean): Promise<WorkRepo> {
+    const was = root.repos?.find((each) => samePath(each.root, repo.root));
+    const worktree = root.worktree;
+    let from = was?.from;
+    if (worktree && samePath(worktree.path, repo.root)) from = worktree.from;
+    else if (!from && repo.head) {
+      // A thread that went on before it kept this, as one brought in from another app did, takes
+      // what its own line had as it started.
+      const late = main && !root.repos && root.startedAt !== undefined;
+      from = (late && (await commitAt(repo.root, root.startedAt!))) || repo.head;
+    }
+    const pr = was?.branch === repo.branch ? was?.pr : undefined;
+    return {
+      root: repo.root,
+      ...(repo.branch ? { branch: repo.branch } : {}),
+      ...(from ? { from } : {}),
+      ...(pr ? { pr } : {}),
+    };
+  }
+
+  /**
+   * Asks GitHub for the pull request of a repository's branch, when its last answer is old. A
+   * branch work merges into has none of its own, and one not on GitHub is never asked about.
+   */
+  private async readPullRequest(repos: WorkRepo[], index: number): Promise<void> {
+    const repo = repos[index]!;
+    const branch = repo.branch;
+    if (!branch) return;
+    const key = `${repo.root}\0${branch}`;
+    const asked = this.prAsked.get(key);
+    if (asked !== undefined && Date.now() - asked < PR_FRESH_MS) return;
+    this.prAsked.set(key, Date.now());
+    if (!(await onGitHub(repo.root))) return;
+    if ((await defaultBranch(repo.root))?.name === branch) return;
+    const pr = await pullRequestOf(repo.root, branch);
+    // GitHub couldn't say: what it said last stands.
+    if (pr === null) return;
+    const { pr: _old, ...rest } = repo;
+    repos[index] = pr ? { ...rest, pr } : rest;
+  }
+
+  /**
+   * Where a thread's changes in a repository are read, and from what. `repo` is the top folder
+   * of one in its `repos`; unset, the one it works in. A worktree's are from the branch it came
+   * from; a branch's from the one its pull request, or work there, merges into; on that branch,
+   * from the commit checked out as the thread began. Without a record, from the last commit. No
+   * folder when no repository holds it, or its folder is gone.
    */
   private async changesWhere(
     threadId: string,
-  ): Promise<{ folder?: string; base?: string; against?: string }> {
+    repo?: string,
+  ): Promise<{ folder?: string; base?: string; against?: string; since?: string }> {
     const thread = this.threads.get(threadId);
     if (!thread) throw new Error("The thread is gone.");
     const root = this.rootOf(thread);
+    const main = this.mainFolder(root);
+    const record = repo
+      ? root.repos?.find((each) => samePath(each.root, repo))
+      : root.repos?.find((each) => main !== undefined && holds(each.root, main));
+    if (repo && !record) throw new Error("The thread's work isn't in that repository.");
     const worktree = root.worktree;
-    if (worktree && worktree.mergedAt === undefined) {
+    if (
+      worktree &&
+      worktree.mergedAt === undefined &&
+      (!record || samePath(record.root, worktree.path))
+    ) {
       const against = worktree.base ? { against: worktree.base } : {};
       if (!existsSync(worktree.path)) return against;
       return { folder: worktree.path, base: worktree.base ?? worktree.from, ...against };
     }
-    // A conversation from another app carries on where it worked there. A thread without a
-    // project works in a folder of its own, which no repository holds.
-    const folder = root.origin
-      ? root.origin.cwd
-      : root.projectId
-        ? this.projectPath(root.projectId)
-        : undefined;
-    if (!folder || !(await repoOf(folder))) return {};
-    return { folder };
+    if (record) {
+      if (!existsSync(record.root)) return {};
+      return { folder: record.root, ...(await this.baseOf(record)) };
+    }
+    // Not read yet. A thread without a project works in a folder of its own, which no
+    // repository holds.
+    const top = main ? (await repoOf(main).catch(() => undefined))?.root : undefined;
+    return top ? { folder: top } : {};
+  }
+
+  /** What a repository's changes are counted from, and how to name it. */
+  private async baseOf(
+    repo: WorkRepo,
+  ): Promise<{ base?: string; against?: string; since?: string }> {
+    if (repo.pr) {
+      const ref = await branchRef(repo.root, repo.pr.base);
+      if (ref) return { base: ref, against: repo.pr.base };
+    }
+    if (repo.branch) {
+      const main = await defaultBranch(repo.root);
+      if (main && main.name !== repo.branch) return { base: main.ref, against: main.name };
+    }
+    return repo.from ? { base: repo.from, since: repo.from } : {};
+  }
+
+  /** Where each of a thread's repositories has its changes read: the one it works in first. */
+  private async allChangesWhere(threadId: string) {
+    const thread = this.threads.get(threadId);
+    if (!thread) throw new Error("The thread is gone.");
+    const root = this.rootOf(thread);
+    const main = await this.changesWhere(threadId);
+    const others = (root.repos ?? []).filter(
+      (repo) => !main.folder || !samePath(repo.root, main.folder),
+    );
+    return [
+      main,
+      ...(await Promise.all(others.map((repo) => this.changesWhere(threadId, repo.root)))),
+    ];
   }
 
   /** Counts what a thread's work changed in its worktree, after a turn. */
@@ -1358,6 +1541,13 @@ export class App implements ThreadContext {
       "app",
       `brought in ${provider.label} conversation ${sessionId} from ${session.app} (${mode}): ${items.length} items, ${children.length} subagents`,
     );
+    // Its branch, its pull request, and every repository it changed files in, there or in its
+    // subagents, come with it, so its work can be looked over and carried on here.
+    this.inBackground(() => this.followRepos(thread.id));
+    const edits = [...items, ...children.flatMap((child) => child.items)].filter(
+      (item): item is ToolItem => item.type === "tool" && item.kind === "edit",
+    );
+    this.followEdits(thread, edits);
     return thread;
   }
 
@@ -1449,6 +1639,10 @@ export class App implements ThreadContext {
       const runtime = this.runtime(threadId);
       client.open.add(threadId);
       this.inBackground(() => this.followCheckout(threadId));
+      // One nobody started has no work yet; its first message marks where that starts.
+      if (this.rootOf(runtime.thread).startedAt !== undefined) {
+        this.inBackground(() => this.followRepos(threadId));
+      }
       return {
         thread: runtime.thread,
         items: runtime.items(),
@@ -1502,17 +1696,34 @@ export class App implements ThreadContext {
       return null;
     },
 
-    "thread.changes": async ({ threadId }) => {
-      const where = await this.changesWhere(threadId);
-      const against = where.against ? { against: where.against } : {};
-      if (!where.folder) return { ...against, files: [] };
-      return { ...against, ...(await changesIn(where.folder, where.base)) };
+    "thread.changes": async ({ threadId, repo }) => {
+      const where = await this.changesWhere(threadId, repo);
+      const scope = {
+        ...(where.folder ? { repo: where.folder } : {}),
+        ...(where.against ? { against: where.against } : {}),
+        ...(where.since ? { since: where.since } : {}),
+      };
+      if (!where.folder) return { ...scope, files: [] };
+      return { ...scope, ...(await changesIn(where.folder, where.base)) };
     },
 
     "thread.changeCount": async ({ threadId }) => {
-      const where = await this.changesWhere(threadId);
-      if (!where.folder) return { files: 0, added: 0, removed: 0 };
-      return countChanges(where.folder, where.base);
+      const total = { files: 0, added: 0, removed: 0 };
+      for (const where of await this.allChangesWhere(threadId)) {
+        if (!where.folder) continue;
+        const count = await countChanges(where.folder, where.base);
+        total.files += count.files;
+        total.added += count.added;
+        total.removed += count.removed;
+      }
+      return total;
+    },
+
+    "thread.files": async ({ threadId, repo }) => {
+      const where = await this.changesWhere(threadId, repo);
+      if (!where.folder) return { paths: [] };
+      const { paths, truncated } = await listFiles(where.folder);
+      return { repo: where.folder, paths, ...(truncated ? { truncated } : {}) };
     },
 
     "thread.merge": async ({ threadId }) => {
@@ -1763,6 +1974,30 @@ async function otherCheckout(
   const here = await repoOf(projectPath).catch(() => undefined);
   if (here && samePath(here.root, there.root)) return undefined;
   return { path: there.root, ...(there.branch ? { branch: there.branch } : {}) };
+}
+
+/** The files an edit changed, as the provider named them: both ends of a move. */
+function editedPaths(edit: ToolItem): string[] {
+  return (edit.changes ?? []).flatMap((change) =>
+    change.movedTo ? [change.path, change.movedTo] : [change.path],
+  );
+}
+
+/** Whether a file is in an agent's own folder, such as its memory: never part of the work. */
+function agentsOwn(path: string): boolean {
+  const home = homedir();
+  return [".claude", ".codex"].some((dir) => holds(join(home, dir), path));
+}
+
+/** The nearest folder that holds a file and still exists. Unset when none does. */
+function nearestFolder(path: string): string | undefined {
+  let folder = dirname(path);
+  while (!existsSync(folder)) {
+    const up = dirname(folder);
+    if (up === folder) return undefined;
+    folder = up;
+  }
+  return folder;
 }
 
 /** What a client knows an attachment by. */

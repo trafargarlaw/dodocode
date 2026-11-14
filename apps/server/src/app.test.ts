@@ -275,7 +275,7 @@ describe("bringing in a conversation from another app", { timeout: 30_000 }, () 
     mkdirSync(folder);
     const message = { text: "Go on", images: [] };
     await expect(t.call("thread.send", { threadId: thread.id, message })).rejects.toThrow(
-      /^The folder this conversation worked in was gone when it was brought in/,
+      /^The folder this conversation worked in was gone when it was imported/,
     );
   });
 

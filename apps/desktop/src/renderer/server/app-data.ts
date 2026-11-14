@@ -9,6 +9,7 @@ import {
   type OutgoingMessage,
   type Project,
   type ProviderInfo,
+  type RepoFiles,
   type ReviewSettings,
   type Settings,
   type Snapshot,
@@ -231,9 +232,17 @@ export function setWorkspace(threadId: string, workspace: WorkspaceMode): void {
     .catch((error: unknown) => reportError("Could not change where it works", error));
 }
 
-/** What a thread's work changed, file by file. */
-export function threadChanges(threadId: string): Promise<WorkChanges> {
-  return server.call("thread.changes", { threadId });
+/**
+ * What a thread's work changed, file by file: in the repository it works in, or in `repo`, one
+ * of the others its work reached.
+ */
+export function threadChanges(threadId: string, repo?: string): Promise<WorkChanges> {
+  return server.call("thread.changes", repo ? { threadId, repo } : { threadId });
+}
+
+/** Every file in a repository a thread works in, as git knows them. */
+export function threadFiles(threadId: string, repo?: string): Promise<RepoFiles> {
+  return server.call("thread.files", repo ? { threadId, repo } : { threadId });
 }
 
 /** How many files and lines a thread's work changed, without the diff. */

@@ -41,15 +41,31 @@ export interface ThreadDetail {
 
 export type ApprovalDecision = "allow" | "allow_session" | "deny";
 
-/** What a thread's work changed, file by file. */
+/** What a thread's work changed in a repository, file by file. */
 export interface WorkChanges {
+  /** The repository's top folder. Paths are from it. Unset when no repository holds the work. */
+  repo?: string;
   /**
-   * The branch the changes are against, for work in a worktree. Unset for work in the project's
-   * folder, whose changes are what isn't committed yet.
+   * The branch the changes are against: the one its worktree or its pull request merges into,
+   * or the branch work there usually merges into.
    */
   against?: string;
+  /**
+   * Set instead on the branch work merges into: the commit checked out as the thread began, so
+   * the changes are what came after it. With neither, they are what isn't committed yet.
+   */
+  since?: string;
   files: FileChange[];
   /** Set when there was more than could be shown. */
+  truncated?: boolean;
+}
+
+/** Every file in a repository a thread works in: those git tracks, and new ones it doesn't ignore. */
+export interface RepoFiles {
+  /** The repository's top folder. Paths are from it. Unset when no repository holds the work. */
+  repo?: string;
+  paths: string[];
+  /** Set when there were more than could be listed. */
   truncated?: boolean;
 }
 
@@ -176,10 +192,20 @@ export interface Methods {
   "thread.delete": { params: { threadId: string }; result: null };
   /** Opens the folder the thread's agent works in, in VS Code. */
   "thread.openInEditor": { params: { threadId: string }; result: null };
-  /** What the thread's work changed: against its base branch in a worktree, else uncommitted. */
-  "thread.changes": { params: { threadId: string }; result: WorkChanges };
-  /** How many files and lines `thread.changes` holds, without the diff: quick to read. */
+  /**
+   * What the thread's work changed in one of its repositories: `repo`, the top folder of one in
+   * its `repos`, or unset for the one it works in. A worktree's are against the branch it came
+   * from; a branch's against the one its pull request, or work there, merges into; else what
+   * came after the thread began, and what isn't committed.
+   */
+  "thread.changes": { params: { threadId: string; repo?: string }; result: WorkChanges };
+  /**
+   * How many files and lines `thread.changes` holds, without the diff: quick to read. Every
+   * repository the thread's work is in counts.
+   */
   "thread.changeCount": { params: { threadId: string }; result: ChangeCount };
+  /** Every file in one of the thread's repositories, as `thread.changes` takes `repo`. */
+  "thread.files": { params: { threadId: string; repo?: string }; result: RepoFiles };
   /**
    * Commits what the agent left in the thread's worktree, merges its branch into the branch it
    * came from, then removes the worktree and the branch. A task is then done.
