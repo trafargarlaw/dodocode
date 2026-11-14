@@ -575,6 +575,12 @@ export class App implements ThreadContext {
       const where = await this.reviewBase(task, project);
       const count = await countChanges(where.folder, where.base);
       if (count.files === 0) {
+        // The details count every repository it reached; a review covers the one it works in.
+        if (await this.changedElsewhere(task.id, where.folder)) {
+          throw new Error(
+            "It changed nothing in the repository it works in, only in others, which a review doesn't cover.",
+          );
+        }
         throw new Error("It has changed nothing yet, so there's nothing to review.");
       }
       const method = this.reviewMethod(project, where.folder);
@@ -630,27 +636,31 @@ export class App implements ThreadContext {
     }
   }
 
+  /** Whether the thread's work changed something in a repository other than `folder`'s. */
+  private async changedElsewhere(threadId: string, folder: string): Promise<boolean> {
+    for (const where of await this.allChangesWhere(threadId)) {
+      if (!where.folder || samePath(where.folder, folder)) continue;
+      if ((await countChanges(where.folder, where.base)).files > 0) return true;
+    }
+    return false;
+  }
+
   /**
-   * What a task's work is compared with: where its branch left the base, as its details count
-   * it, or its last commit when there's no telling.
+   * What a task's work is compared with, as its details count it: where its branch left the
+   * branch it merges into, or the commit it began from, so work it committed is reviewed too.
+   * Without a record of either, its last commit.
    */
   private async reviewBase(
     task: Thread,
     project: Project,
   ): Promise<{ folder: string; base: string; label: string }> {
-    const worktree = task.worktree;
-    if (worktree) {
-      const base = await startOf(worktree.path, worktree.base ?? worktree.from);
-      return { folder: worktree.path, base, label: worktree.base ?? `commit ${base.slice(0, 7)}` };
-    }
-    // What the details count as changed: against the branch the work merges into, or since the
-    // commit checked out as it began, so work it committed is reviewed too.
     const changes = await this.changesWhere(task.id);
     if (changes.folder && changes.base) {
       const base = await startOf(changes.folder, changes.base);
       const label = changes.against ?? `commit ${base.slice(0, 7)}`;
       return { folder: changes.folder, base, label };
     }
+    if (task.worktree) throw new Error("Its worktree is gone, so there's nothing to review.");
     const repo = await repoOf(project.path);
     if (!repo) throw new Error(`${project.name} isn't in git, so there's no telling what changed.`);
     const base = await startOf(project.path, undefined);

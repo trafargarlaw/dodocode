@@ -4,7 +4,6 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type CSSProperties,
   type MouseEvent,
   type ReactNode,
   type Ref,
@@ -67,17 +66,12 @@ import { StatusGlyph } from "../task-ui";
 import { openBoard, openRelated, useView } from "../view";
 import { latestTodos, toBlocks, type Block } from "./blocks";
 import { clearDraft, Composer, readyDraft } from "./composer";
-import { DetailsButton, DetailsCard, useDetailsRoom } from "./details";
+import { DETAILS_ROOM_RIGHT, DetailsButton, DetailsCard, useDetailsRoom } from "./details";
 import { ImageGallery, Images } from "./image-view";
 import { BlockView, Working } from "./messages";
 import { ReviewerAccess } from "./pickers";
 import { SidePanel, useSidePanel } from "./side-panel";
 import { changesToShow, MergeButton, workPlace, workspaceSlots } from "./workspace";
-
-/** The room the conversation leaves on its right for the details, set where it's measured. */
-const DETAILS_ROOM = "--details-room";
-/** Leaves that room inside an element's padding, beside its scrollbar's place, not past it. */
-const ROOM_RIGHT = "pr-(--details-room)";
 
 export function ThreadView({
   threadId,
@@ -174,7 +168,7 @@ export function ThreadView({
           <div
             ref={setConversation}
             inert={hidden}
-            style={{ [DETAILS_ROOM]: `${detailsRoom}px` } as CSSProperties}
+            style={detailsRoom}
             className={cn(
               "relative grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_auto]",
               hidden && "invisible",
@@ -203,7 +197,7 @@ export function ThreadView({
             ) : (
               <Transcript key={threadId} thread={thread} items={itemList} />
             )}
-            <div className={ROOM_RIGHT}>
+            <div className={DETAILS_ROOM_RIGHT}>
               <div className="mx-auto w-full max-w-3xl px-5 pb-4">
                 {thread.kind === "subagent" ? (
                   <SubagentNote thread={thread} />
@@ -426,7 +420,7 @@ function Transcript({ thread, items }: { thread: Thread; items: Item[] }) {
       <MessageScroller>
         <MessageScrollerViewport
           ref={olderViewport}
-          className={cn(ROOM_RIGHT, folds.unanchored && "[overflow-anchor:none]")}
+          className={cn(DETAILS_ROOM_RIGHT, folds.unanchored && "[overflow-anchor:none]")}
           onClickCapture={folds.onClickCapture}
           onScroll={(event) => {
             folds.onScroll();
@@ -687,7 +681,7 @@ function ReviewButton({ thread }: { thread: Thread }) {
 function TaskBrief({ thread }: { thread: Thread }) {
   const covers = thread.task?.covers ?? [];
   return (
-    <div className={cn("min-h-0 overflow-y-auto", ROOM_RIGHT)}>
+    <div className={cn("min-h-0 overflow-y-auto", DETAILS_ROOM_RIGHT)}>
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-6 pt-8 pb-6">
         <p className="text-[12.5px] text-muted-foreground">
           {thread.task?.status === "backlog"

@@ -1,12 +1,14 @@
 // A thread's details, in a card in the conversation's top corner, which the conversation makes
-// room for, or which lies over it when the conversation has too little room: where it works and what that changed, where it stands, the
-// agent's plan, and the subagents, reviews and background work it started. The header's button
-// shows and hides it, and it stays until hidden, from thread to thread.
+// room for, or which lies over it when the conversation has too little room: where it works and
+// what that changed, where it stands, the agent's plan, and the subagents, reviews and background
+// work it started. The header's button shows and hides it, and it stays until hidden, from thread
+// to thread.
 
 import {
   useLayoutEffect,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -120,6 +122,8 @@ export function DetailsButton({ jobs }: { jobs: BackgroundJob[] }) {
   return (
     <>
       {!open && running > 0 && (
+        // It counts subagents sent to the background too, which the details show with the
+        // subagents: work still running all the same.
         <Tip label="Background work: show the details">
           <Button
             variant="ghost"
@@ -168,29 +172,40 @@ interface DetailsProps {
 
 /** The card's width. */
 const CARD_WIDTH = 320;
-/** The card's distance from the right edge. */
-const CARD_EDGE = 12;
+/** The gap between the card and the right edge. */
+const CARD_GAP = 12;
 /** The width the conversation keeps beside the card; narrower, the card lies over it. */
 const CONVERSATION_MIN = 560;
+/** The room the card takes beside the conversation: its width and its gap. */
+const CARD_ROOM = CARD_WIDTH + CARD_GAP;
 
 /**
- * The room the conversation leaves on its right for the card, in pixels: none while the card is
- * hidden, or when the conversation would be left too narrow and the card lies over it instead.
- * Give it the element that holds the conversation and the card.
+ * Leaves the room for the card inside an element's right padding, so a scrollbar stays at the
+ * edge. For what scrolls, or lines up with it, inside the element given useDetailsRoom. The
+ * variable is spelled out for Tailwind, which reads class names as written.
  */
-export function useDetailsRoom(element: HTMLElement | null): number {
-  const shownNow = useDetailsShown();
+export const DETAILS_ROOM_RIGHT = "pr-(--details-room)";
+
+/**
+ * The style that sets the room the conversation leaves on its right for the card, for
+ * DETAILS_ROOM_RIGHT inside it: none while the card is hidden, or when the conversation would be
+ * left too narrow and the card lies over it instead. Give it the element that holds the
+ * conversation and the card, and the style to that element.
+ */
+export function useDetailsRoom(element: HTMLElement | null): CSSProperties {
+  const open = useDetailsShown();
   const [wide, setWide] = useState(false);
   useLayoutEffect(() => {
     if (!element) return;
     const measure = () =>
-      setWide(element.getBoundingClientRect().width >= CARD_WIDTH + CARD_EDGE + CONVERSATION_MIN);
+      setWide(element.getBoundingClientRect().width >= CARD_ROOM + CONVERSATION_MIN);
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
   }, [element]);
-  return shownNow && wide ? CARD_WIDTH + CARD_EDGE : 0;
+  const room = open && wide ? CARD_ROOM : 0;
+  return { "--details-room": `${room}px` } as CSSProperties;
 }
 
 /**
@@ -205,7 +220,7 @@ export function DetailsCard({ className, ...props }: DetailsProps & { className?
     <section
       aria-label="Details"
       onKeyDown={hideOnEscape}
-      style={{ right: CARD_EDGE, width: `min(${CARD_WIDTH}px, calc(100% - ${2 * CARD_EDGE}px))` }}
+      style={{ right: CARD_GAP, width: `min(${CARD_WIDTH}px, calc(100% - ${2 * CARD_GAP}px))` }}
       className={cn(
         "absolute top-2 z-10 flex max-h-[calc(100%-1rem)] origin-top-right animate-in flex-col overflow-y-auto rounded-lg bg-popover p-1 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 fade-in-0 zoom-in-95",
         className,
@@ -227,6 +242,12 @@ function Details({ thread, project, todos, jobs, mode, onShowChanges }: DetailsP
   });
   const subagents = children.filter((child) => child.kind === "subagent").toSorted(byActive);
   const reviews = children.filter((child) => child.kind === "review");
+  // A subagent sent to the background is a job too, but it shows with the subagents already.
+  const background = jobs.filter(
+    (job) =>
+      job.toolItemId === undefined ||
+      !subagents.some((child) => child.parentItemId === job.toolItemId),
+  );
   const done = todos?.filter((todo) => todo.status === "completed").length ?? 0;
 
   return (
@@ -269,7 +290,7 @@ function Details({ thread, project, todos, jobs, mode, onShowChanges }: DetailsP
         </Part>
       )}
       {reviews.length > 0 && <ReviewsPart reviews={reviews} />}
-      {jobs.length > 0 && <BackgroundPart threadId={thread.id} jobs={jobs} />}
+      {background.length > 0 && <BackgroundPart threadId={thread.id} jobs={background} />}
     </>
   );
 }
@@ -322,21 +343,39 @@ function Fact({
   );
 }
 
-/** A part below a line, under a plain heading. A count, when given, sits at the heading's end. */
+/**
+ * A part below a line, under a plain heading. A count, when given, sits at the heading's end; what
+ * the part is for, when given, shows from an icon beside the title.
+ */
 function Part({
   title,
   count,
+  about,
   children,
 }: {
   title: string;
   count?: ReactNode;
+  about?: string;
   children: ReactNode;
 }) {
   return (
     <section aria-label={title} className="flex flex-col">
       <Separator className="my-1" />
-      <h2 className="flex items-center gap-2 px-2 pt-1 pb-1 text-[12px] font-medium text-muted-foreground">
+      <h2 className="flex items-center gap-1 px-2 pt-1 pb-1 text-[12px] font-medium text-muted-foreground">
         {title}
+        {about && (
+          <Tip label={about}>
+            <span className="inline-flex">
+              <HugeiconsIcon
+                icon={InformationCircleIcon}
+                strokeWidth={1.8}
+                aria-hidden
+                className="size-3.5"
+              />
+              <span className="sr-only">{about}</span>
+            </span>
+          </Tip>
+        )}
         {count !== undefined && <span className="ml-auto font-normal tabular-nums">{count}</span>}
       </h2>
       {children}
@@ -746,7 +785,11 @@ const JOB_STATUS: Record<BackgroundJob["status"], string> = {
 function BackgroundPart({ threadId, jobs }: { threadId: string; jobs: BackgroundJob[] }) {
   const running = jobs.filter((job) => job.status === "running").length;
   return (
-    <Part title="Background" count={running > 0 ? `${running} running` : jobs.length}>
+    <Part
+      title="Background"
+      count={running > 0 ? `${running} running` : jobs.length}
+      about="Commands the agent left running while it went on, such as a build, a server or a watch on a log"
+    >
       <ul className="flex flex-col">
         {jobs.map((job) => (
           <li key={job.id} className="flex items-start gap-2.5 rounded-md px-2 py-1.5">
@@ -759,7 +802,8 @@ function BackgroundPart({ threadId, jobs }: { threadId: string; jobs: Background
               <span className="truncate text-[13px]">{job.title}</span>
               <span
                 className={cn(
-                  "text-xs text-muted-foreground",
+                  // A summary can run long: what it says first is enough here.
+                  "line-clamp-2 text-xs text-muted-foreground",
                   job.status === "failed" && "text-destructive",
                 )}
               >

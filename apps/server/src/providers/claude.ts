@@ -297,10 +297,11 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
   /** Transcripts of subagents, by the tool call that started them. */
   private subagents = new Map<string, Transcript>();
   private subagentWriters = new Map<string, SubagentWriter>();
-  /** Tool calls by task, for background tasks. */
-  private taskTools = new Map<string, string>();
-  /** Each task's type, as it started, for a task moved to the background later. */
-  private taskTypes = new Map<string, string>();
+  /**
+   * Each running SDK task's tool call and type, as it started, for a task moved to the
+   * background later, and for its end. Not the board's tasks.
+   */
+  private sdkTasks = new Map<string, { toolId?: string; type: string }>();
   /** Permission rules the person allowed for this thread, kept across processes. */
   private allowedRules = new Set<string>();
   private allowedTools = new Set<string>();
@@ -698,8 +699,7 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
     const taskId = event.task_id as string;
     const toolId = event.tool_use_id as string | undefined;
     const taskType = (event.task_type as string | undefined) ?? "";
-    if (toolId) this.taskTools.set(taskId, toolId);
-    this.taskTypes.set(taskId, taskType);
+    this.sdkTasks.set(taskId, { ...(toolId ? { toolId } : {}), type: taskType });
     if (!event.is_backgrounded) return;
     this.backgroundTask(taskId, toolId, taskType, event.description as string | undefined);
   }
@@ -735,15 +735,15 @@ class ClaudeSession implements ProviderSession, TranscriptHooks {
     const taskId = event.task_id as string;
     const patch = (event.patch ?? {}) as { is_backgrounded?: boolean; description?: string };
     if (patch.is_backgrounded) {
-      const taskType = this.taskTypes.get(taskId) ?? "";
-      this.backgroundTask(taskId, this.taskTools.get(taskId), taskType, patch.description);
+      const task = this.sdkTasks.get(taskId);
+      this.backgroundTask(taskId, task?.toolId, task?.type ?? "", patch.description);
     }
   }
 
   private taskEnded(event: Record<string, unknown>): void {
     const taskId = event.task_id as string;
-    const toolId = (event.tool_use_id as string | undefined) ?? this.taskTools.get(taskId);
-    this.taskTypes.delete(taskId);
+    const toolId = (event.tool_use_id as string | undefined) ?? this.sdkTasks.get(taskId)?.toolId;
+    this.sdkTasks.delete(taskId);
     const status = event.status as "completed" | "failed" | "stopped";
     const summary = (event.summary as string | undefined) || undefined;
     this.host.jobEnded(taskId, { status, summary });
