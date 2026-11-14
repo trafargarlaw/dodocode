@@ -65,9 +65,9 @@ function groups(
 }
 
 describe("the sidebar", () => {
-  test("groups the tasks by where each is, then the chats, and leaves out empty groups", () => {
+  test("groups the tasks by where each is, then the chats, then done, and leaves out empty groups", () => {
     const list = [thread("chat"), task("t", "todo"), task("p", "progress"), task("d", "done")];
-    expect(groups(list)).toEqual(["progress: p", "todo: t", "done: d", "chats: chat"]);
+    expect(groups(list)).toEqual(["progress: p", "todo: t", "chats: chat", "done: d"]);
   });
 
   test("puts pinned threads first, then what waits for the person, then the newest", () => {

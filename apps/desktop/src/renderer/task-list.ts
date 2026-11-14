@@ -13,10 +13,11 @@ import {
 export type GroupId = TaskStatus | "chats";
 
 /**
- * The sidebar's groups, in order: the tasks, from under way to done, then the chats. Ideas in the
- * backlog aren't planned, so they stay on the board.
+ * The sidebar's groups, in order: the tasks still to finish, from under way to not started, then
+ * the chats, then the tasks done, at the bottom, out of the way. Ideas in the backlog aren't
+ * planned, so they stay on the board.
  */
-export const GROUPS: readonly GroupId[] = ["progress", "review", "todo", "done", "chats"];
+export const GROUPS: readonly GroupId[] = ["progress", "review", "todo", "chats", "done"];
 
 /** The board's columns, in order. The backlog shows left of them, when it is open. */
 export const COLUMNS: readonly TaskStatus[] = ["todo", "progress", "review", "done"];

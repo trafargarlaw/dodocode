@@ -108,8 +108,10 @@ export function Sidebar({ onNewThread }: { onNewThread: () => void }) {
     limit: LIST_LIMIT,
     now,
   });
-  const tasks = groups.filter((group) => group.id !== "chats");
+  const tasks = groups.filter((group) => group.id !== "chats" && group.id !== "done");
   const chats = groups.find((group) => group.id === "chats");
+  // Done tasks go at the bottom, under the chats: finished, they need nothing more.
+  const done = groups.find((group) => group.id === "done");
   // A subagent or a review has no row: the row of the thread it belongs to stands for it.
   const openTopId = openId ? topThreadId(threadList, openId) : undefined;
   const waiting = threadList.filter(
@@ -213,6 +215,16 @@ export function Sidebar({ onNewThread }: { onNewThread: () => void }) {
           <Section title="Chats">
             <GroupRows collapsed={false} {...rowsProps(chats)} />
           </Section>
+        )}
+        {done && (
+          // Pinned to the foot of the list while there's room; once the list scrolls, it follows the chats.
+          <div className="mt-auto pt-4">
+            <Group
+              collapsed={collapsed.has(done.id)}
+              onToggle={() => collapsed.toggle(done.id)}
+              {...rowsProps(done)}
+            />
+          </div>
         )}
       </div>
     </nav>
